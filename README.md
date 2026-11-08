@@ -17,6 +17,16 @@ bash scripts/build_app.sh     # → build/DeTuneX.app (release, ad-hoc signed)
 open build/DeTuneX.app
 ```
 
+Architecture options:
+
+```bash
+bash scripts/build_app.sh --x86_64      # Intel (x86_64): runs on Intel Macs, or on Apple Silicon via Rosetta 2
+bash scripts/build_app.sh --arm64       # Apple Silicon
+bash scripts/build_app.sh --universal   # both architectures in one app
+```
+
+On Apple Silicon, an x86_64 build runs under Rosetta 2, which macOS offers to install the first time you open it. Rosetta adds CPU overhead, so for the lowest latency on Apple Silicon use the native or universal build.
+
 To work in Xcode, open `Package.swift` and run the `DeTuneX` scheme. When you run it unbundled from Xcode or with `swift run`, macOS asks for microphone permission on behalf of Xcode or Terminal instead of the app. Use the `.app` bundle for normal playing.
 
 Each rebuild gets a new ad-hoc signature, so macOS may ask for permission again or remember an old "Don't Allow". To reset it, run `tccutil reset Microphone com.detunex.app`.
