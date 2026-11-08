@@ -20,9 +20,12 @@ open build/DeTuneX.app
 Architecture options:
 
 ```bash
-bash scripts/build_app.sh --x86_64      # Intel (x86_64): runs on Intel Macs, or on Apple Silicon via Rosetta 2
-bash scripts/build_app.sh --arm64       # Apple Silicon
-bash scripts/build_app.sh --universal   # both architectures in one app
+bash scripts/build_app.sh --both        # two labelled apps + zips:
+                                        #   build/DeTuneX-arm64.app   "De-TuneX (Apple Silicon)"
+                                        #   build/DeTuneX-x86_64.app  "De-TuneX (Intel)"
+bash scripts/build_app.sh --arm64       # Apple Silicon only
+bash scripts/build_app.sh --x86_64      # Intel only (also runs on Apple Silicon via Rosetta 2)
+bash scripts/build_app.sh --universal   # one app containing both architectures
 ```
 
 On Apple Silicon, an x86_64 build runs under Rosetta 2, which macOS offers to install the first time you open it. Rosetta adds CPU overhead, so for the lowest latency on Apple Silicon use the native or universal build.
