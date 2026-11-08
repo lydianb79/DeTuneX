@@ -6,14 +6,34 @@ A native macOS app that does what the BOSS XS-1 Poly Shifter does: you plug a gu
 * **C++ realtime DSP** (no Swift, locks or allocation on the audio thread)
 * **CoreAudio HAL (AUHAL) duplex I/O** with device, channel, sample-rate and **buffer-size** selection
 * **CoreMIDI** expression pedal / footswitch control, keyboard control
+* Six colour themes and its own app icon
 
-## Build & run
+## Download
+
+Get the latest build from **[Releases](https://github.com/lydianb79/DeTuneX/releases/latest)**:
+
+| File | Mac |
+|---|---|
+| `DeTuneX-arm64.zip` | Apple Silicon (M-series): "De-TuneX (Apple Silicon)" |
+| `DeTuneX-x86_64.zip` | Intel: "De-TuneX (Intel)". Also runs on Apple Silicon through Rosetta 2, with more CPU load |
+
+Requires **macOS 13 Ventura** or later.
+
+**First launch.** The builds are ad-hoc signed and not notarized, so Gatekeeper blocks them at first:
+1. Unzip, then move the app to **Applications**.
+2. Right-click the app, choose **Open**, then **Open** again in the dialog. On macOS 15 and later, you may need **System Settings › Privacy & Security › Open Anyway** instead.
+3. Allow **microphone** access. This is how macOS labels every audio input, including your interface's instrument input. Then open **Audio Setup** from the toolbar.
+
+If you prefer the Terminal: `xattr -dr com.apple.quarantine /Applications/DeTuneX-arm64.app`
+
+## Build from source
 
 Requirements: macOS 13 or later, Xcode 15 or later (or the Command Line Tools with Swift 5.9 or later).
 
 ```bash
+git clone https://github.com/lydianb79/DeTuneX.git
 cd DeTuneX
-bash scripts/build_app.sh     # → build/DeTuneX.app (release, ad-hoc signed)
+bash scripts/build_app.sh     # → build/DeTuneX.app (native architecture, release, ad-hoc signed)
 open build/DeTuneX.app
 ```
 
@@ -34,20 +54,33 @@ To work in Xcode, open `Package.swift` and run the `DeTuneX` scheme. When you ru
 
 Each rebuild gets a new ad-hoc signature, so macOS may ask for permission again or remember an old "Don't Allow". To reset it, run `tccutil reset Microphone com.detunex.app`.
 
-The first time you launch it, allow **microphone** access. This is how macOS labels every audio input, including your interface's instrument input. Then open **Audio Setup** from the toolbar.
+### Publishing a release
 
-### Getting the lowest latency
+Build both architectures, then upload them with the GitHub CLI. This needs a login that has write access to the repository; `gh auth login --web` provides one.
+
+```bash
+bash scripts/build_app.sh --both
+gh release create vX.Y.Z build/DeTuneX-arm64.zip build/DeTuneX-x86_64.zip \
+  --target main --title "De-TuneX X.Y.Z" --notes-file <release-notes.md>
+```
+
+## Getting the lowest latency
+
+Everything below is in **Audio Setup**, which also shows a full latency breakdown.
 
 1. **Use one audio interface for both input and output.** If you pick two different devices, the app creates a hidden aggregate device. That works, but it adds safety buffers.
-2. Pick the **highest sample rate** your interface handles comfortably (96 kHz roughly halves converter latency), then use the **smallest buffer that doesn't crackle**: 64 samples to start, 32 or 16 if your CPU and driver allow it. The toolbar shows a DSP-load figure and a dropout counter.
-3. Use the **Tight** or **Balanced** engine for playing. **Studio** is for practising and recording only.
-4. Avoid Bluetooth. The app warns you if you select a Bluetooth device.
+2. **Don't use the Mac's built-in microphone, built-in speakers or Bluetooth.** The built-in mic alone reports around 30 ms of input latency, and Bluetooth adds 100 ms or more. The app warns you if you select a Bluetooth device.
+3. Pick the **highest sample rate** your interface handles comfortably (96 kHz roughly halves converter latency), then the **smallest buffer that doesn't crackle**: 64 samples to start, 32 or 16 if your CPU and driver allow it. The toolbar shows the DSP load and a dropout counter.
+4. Set **Output timing** (IO cycle usage) to **50 %**. By default macOS calls the app at the start of each IO cycle; De-TuneX needs only a few percent of the cycle, so letting macOS call it later removes most of one buffer of output latency at no CPU cost. Go back toward 100 % if you hear crackles.
+5. Use the **Tight** or **Balanced** engine for playing. **Studio** is for practising and recording only.
+6. Turn off your interface's own direct monitoring of the guitar input. On a Universal Audio Apollo, mute that channel in UA Console; on a Volt, switch monitoring off. Otherwise you hear the dry and shifted signals together.
+7. If the interface has its own driver or control panel, set its safety buffer to the lowest setting.
 
-The **total latency** readout shows converter, driver and buffer latency as reported by the driver, plus the pitch shifter's own delay. Typical figures with a USB interface at 48 kHz and 64 samples are about 4–6 ms of I/O plus 1–8 ms of shifting.
+The **total latency** readout adds the converter and driver latency reported by the driver, the input buffer, the trimmed output buffer, and the pitch shifter's own delay. With a good USB or Thunderbolt interface at 48 kHz and 64 samples, expect about 3–6 ms of I/O plus 1–8 ms of shifting.
 
 ## Themes & icon
 
-Pick a theme from the **palette** button in the toolbar or from **Pedal › Theme**. There are six: Ocean, Neon, Crimson, Emerald, Stealth and Vintage (a light, cream-coloured enclosure). Each one restyles the pedal enclosure, the window, the panels and the Metal scope's grid, glow and trace colours. Your choice is remembered.
+Pick a theme from the **palette** button in the toolbar or from **Pedal › Theme**. There are six: **Stealth** (graphite, the default), Ocean, Neon, Crimson, Emerald and Vintage (a light, cream-coloured enclosure). Each one restyles the pedal enclosure, the window, the panels and the Metal scope's grid, glow and trace colours. Your choice is remembered.
 
 The app icon is `Support/AppIcon.icns`, generated by `scripts/make_icon.py` (Python + Pillow). Edit the script and run it again to change the icon.
 
@@ -101,11 +134,12 @@ Sources/DSPCore/        C++17 DSP, C API (DSPCore.h): GrainShifter, SpectralShif
 Sources/AudioHost/      CoreAudio AUHAL duplex host + private aggregate device
 Sources/DeTuneX/        SwiftUI app, Metal scope, CoreMIDI, device enumeration, settings
 Tests/                  offline DSP test suite
-Support/                Info.plist, entitlements
-scripts/build_app.sh    builds and ad-hoc signs DeTuneX.app
+Support/                Info.plist, entitlements, AppIcon.icns
+scripts/build_app.sh    builds and ad-hoc signs the app (--both / --arm64 / --x86_64 / --universal)
 scripts/run_tests.sh    runs the DSP test suite
+scripts/make_icon.py    regenerates the app icon
 ```
 
-Settings (devices, buffer, setups, MIDI map) persist in `UserDefaults`.
+Settings (devices, buffer, output timing, setups, MIDI map, theme) persist in `UserDefaults`.
 
 *BOSS and XS-1 are trademarks of Roland Corporation. De-TuneX is an independent project, not affiliated with or endorsed by Roland, and it uses its own algorithms.*
