@@ -2,11 +2,22 @@
 
 A native macOS app that does what the BOSS XS-1 Poly Shifter does: you plug a guitar into an audio interface and hear it polyphonically re-pitched in real time. It's built for playing live, so latency was the main design constraint.
 
+![De-TuneX main window: pedal controls, Metal oscilloscope, tuning setups and engine selector (Stealth theme)](docs/screenshot.png)
+
+<sub>Shown with the Mac's built-in microphone and speakers, which is why the I/O latency reads about 57 ms. With an audio interface it's a few ms (see [Getting the lowest latency](#getting-the-lowest-latency)).</sub>
+
 * **SwiftUI** front panel styled like a compact pedal, **Metal** oscilloscope (input vs. shifted output)
 * **C++ realtime DSP** (no Swift, locks or allocation on the audio thread)
 * **CoreAudio HAL (AUHAL) duplex I/O** with device, channel, sample-rate and **buffer-size** selection
 * **CoreMIDI** expression pedal / footswitch control, keyboard control
 * Six colour themes and its own app icon
+
+## What's new in 1.1
+
+* **Much cleaner chords** on every engine. Each splice is now aligned over a 4× longer stretch of the waveform, so it matches all the strings of a chord instead of just the loudest one, with no added delay. On realistic strummed chords, artifacts drop from −22.7 to −26.4 dB (Balanced) and from −26.3 to −30.2 dB (Wide). See [Engines](#engines).
+* **New Studio engine:** a long-window version of the main engine replaces the phase vocoder. Chord artifacts drop from −14.9 to −34.1 dB, and the delay falls from 43 to 36 ms.
+* **Lower CPU use:** 0.5–1.9 % of one core.
+* **Honest latency figures:** on chords the shifter needs ~13 ms (Balanced) or ~19 ms (Wide). The app and this README now say so.
 
 ## Download
 
