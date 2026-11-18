@@ -7,6 +7,15 @@ struct DeTuneXApp: App {
     @StateObject private var engine = AudioEngine()
     @AppStorage("themeID") private var themeID = Theme.stealth.id
 
+    init() {
+        // Only one De-TuneX may run at a time: a second copy (including another
+        // build, e.g. arm64 next to x86_64) would open the same audio interface and
+        // play its own output, typically the dry guitar while bypassed.
+        // Runs before the audio engine is created, so the second copy never
+        // touches the audio device.
+        SingleInstance.enforce()
+    }
+
     var body: some Scene {
         Window("De-TuneX", id: "main") {
             ContentView()
@@ -33,6 +42,18 @@ struct DeTuneXApp: App {
                     .keyboardShortcut("r", modifiers: [.command, .shift])
             }
         }
+    }
+}
+
+enum SingleInstance {
+    static func enforce() {
+        guard let id = Bundle.main.bundleIdentifier else { return }   // unbundled (swift run): skip
+        let me = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: id)
+            .filter { $0.processIdentifier != me && !$0.isTerminated }
+        guard let running = others.first else { return }
+        running.activate(options: [])
+        exit(0)
     }
 }
 
