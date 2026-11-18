@@ -18,6 +18,12 @@
 //     shortened for large up-shifts to keep the delay budget (and latency) small.
 //
 // Latency ≈ searchRadius + |1 - ratio| * grainLen / 2 (a few ms in "Tight").
+//
+// Stereo: processStereo() runs ONE grain timeline for both channels. Splice
+// points and attack detection are computed on the mid signal (L+R)/2, and the
+// same grain positions and weights read the left and right delay lines, so the
+// stereo image of the source (e.g. an amp modeller's stereo effects) is kept and
+// does not wander or phase between the sides.
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -43,6 +49,8 @@ class GrainShifter {
 public:
     void prepare() {
         buf_.assign(kBufSize, 0.f);
+        side_[0].assign(kBufSize, 0.f);
+        side_[1].assign(kBufSize, 0.f);
         corr_.assign(8192, 0.f);
         ref_.assign(8192, 0.f);       // correlation window (corrLen) scratch
         chunk_.assign(16384, 0.f);    // candidate region (2 x searchRadius + corrLen) scratch
@@ -57,6 +65,7 @@ public:
 
     void reset() {
         std::fill(buf_.begin(), buf_.end(), 0.f);
+        for (auto& b : side_) std::fill(b.begin(), b.end(), 0.f);
         for (auto& g : grains_) g = Grain{};
         newest_ = -1;
         envFast_ = envSlow_ = 0.f;
@@ -69,40 +78,20 @@ public:
     void setConfig(const GrainConfig& c) { pending_ = c; }
     float latency() const { return latency_; }
 
+    // Mono.
     inline float process(float x, float ratio) {
-        ++t_;
-        buf_[t_ & kMask] = x;
+        float out;
+        run<1>(&x, &out, ratio);
+        return out;
+    }
 
-        if (cfg_.snap && detectAttack(x)) {
-            snapTo(ratio);
-        } else if (newest_ < 0 || !grains_[newest_].active || grains_[newest_].age * 2 >= grains_[newest_].len) {
-            spawn(ratio);
-        }
-
-        const double maxPos = (double)(t_ - 2);
-        const double minPos = (double)(t_ - (kBufSize - 8));
-        float acc = 0.f, wsum = 0.f;
-        for (auto& g : grains_) {
-            if (!g.active) continue;
-            if (g.pos > maxPos) g.pos = maxPos;      // ratio rose mid-grain: never read the future
-            else if (g.pos < minPos) g.pos = minPos;
-            const float ph = (float)g.age * g.invLen * kWinTable;
-            const int wi = (int)ph;
-            const float wf = ph - wi;
-            float w = win_[wi] + (win_[wi + 1] - win_[wi]) * wf;
-            if (g.fastRise > 0.f && g.age * 2 < g.len)                 // snapped grain: quick fade-in, then hold
-                w = std::min(1.f, (float)g.age * g.fastRise);
-            if (g.releaseAt >= 0) {                                    // cut short by a snap: quick fade-out
-                const float k = 1.f - (float)(g.age - g.releaseAt) * g.releaseInv;
-                if (k <= 0.f) { g.active = false; continue; }
-                w *= k;
-            }
-            acc += w * read(g.pos);
-            wsum += w;
-            g.pos += ratio;
-            if (++g.age >= g.len) g.active = false;
-        }
-        return acc / std::max(wsum, 0.5f);
+    // Linked stereo: one grain timeline, decisions made on the mid signal.
+    inline void processStereo(float l, float r, float ratio, float& outL, float& outR) {
+        const float in[2] = {l, r};
+        float out[2];
+        run<2>(in, out, ratio);
+        outL = out[0];
+        outR = out[1];
     }
 
 private:
@@ -114,6 +103,50 @@ private:
     static constexpr int kMargin = 4;
     static constexpr int kSnapLead = 48;       // samples @48k before the detection point (1 ms)
     static constexpr int kSnapHoldoff = 4800;  // samples @48k: at most one snap per 100 ms
+
+    template <int N>
+    inline void run(const float* in, float* out, float ratio) {
+        ++t_;
+        const int64_t w = t_ & kMask;
+        // Analysis signal: the input itself (mono) or the mid signal (stereo).
+        const float mid = N == 1 ? in[0] : 0.5f * (in[0] + in[1]);
+        buf_[w] = mid;
+        if (N == 2) { side_[0][w] = in[0]; side_[1][w] = in[1]; }
+
+        if (cfg_.snap && detectAttack(mid)) {
+            snapTo(ratio);
+        } else if (newest_ < 0 || !grains_[newest_].active || grains_[newest_].age * 2 >= grains_[newest_].len) {
+            spawn(ratio);
+        }
+
+        const double maxPos = (double)(t_ - 2);
+        const double minPos = (double)(t_ - (kBufSize - 8));
+        float acc[N] = {};
+        float wsum = 0.f;
+        for (auto& g : grains_) {
+            if (!g.active) continue;
+            if (g.pos > maxPos) g.pos = maxPos;      // ratio rose mid-grain: never read the future
+            else if (g.pos < minPos) g.pos = minPos;
+            const float ph = (float)g.age * g.invLen * kWinTable;
+            const int wi = (int)ph;
+            const float wf = ph - wi;
+            float wt = win_[wi] + (win_[wi + 1] - win_[wi]) * wf;
+            if (g.fastRise > 0.f && g.age * 2 < g.len)                 // snapped grain: quick fade-in, then hold
+                wt = std::min(1.f, (float)g.age * g.fastRise);
+            if (g.releaseAt >= 0) {                                    // cut short by a snap: quick fade-out
+                const float k = 1.f - (float)(g.age - g.releaseAt) * g.releaseInv;
+                if (k <= 0.f) { g.active = false; continue; }
+                wt *= k;
+            }
+            if (N == 1) acc[0] += wt * read(buf_, g.pos);
+            else for (int c = 0; c < N; ++c) acc[c] += wt * read(side_[c], g.pos);
+            wsum += wt;
+            g.pos += ratio;
+            if (++g.age >= g.len) g.active = false;
+        }
+        const float norm = 1.f / std::max(wsum, 0.5f);
+        for (int c = 0; c < N; ++c) out[c] = acc[c] * norm;
+    }
 
     struct Grain {
         double pos = 0;
@@ -176,11 +209,11 @@ private:
 
     inline float at(int64_t i) const { return buf_[i & kMask]; }
 
-    // 4-point, 3rd-order Hermite interpolation.
-    inline float read(double pos) const {
+    // 4-point, 3rd-order Hermite interpolation from delay line `b`.
+    static inline float read(const std::vector<float>& b, double pos) {
         const int64_t i = (int64_t)std::floor(pos);
         const float f = (float)(pos - (double)i);
-        const float xm1 = at(i - 1), x0 = at(i), x1 = at(i + 1), x2 = at(i + 2);
+        const float xm1 = b[(i - 1) & kMask], x0 = b[i & kMask], x1 = b[(i + 1) & kMask], x2 = b[(i + 2) & kMask];
         const float c1 = 0.5f * (x1 - xm1);
         const float c2 = xm1 - 2.5f * x0 + 2.f * x1 - 0.5f * x2;
         const float c3 = 0.5f * (x2 - xm1) + 1.5f * (x0 - x1);
@@ -295,6 +328,7 @@ private:
     }
 
     std::vector<float> buf_, win_, corr_, ref_, chunk_;
+    std::vector<float> side_[2];   // left/right delay lines (stereo only); buf_ holds the analysis signal
     std::vector<double> prefix_;
     Grain grains_[kMaxGrains];
     int newest_ = -1;

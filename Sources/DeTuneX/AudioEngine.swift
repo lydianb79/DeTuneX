@@ -252,6 +252,8 @@ final class AudioEngine: ObservableObject {
             return
         }
         let inCh = min(max(audio.inputChannel, 0), input.inputChannels - 1)
+        var inR = audio.inputChannelR
+        if inR < 0 || inR >= input.inputChannels || inR == inCh { inR = -1 }
         let outL = min(max(audio.outputChannelL, 0), output.outputChannels - 1)
         var outR = audio.outputChannelR
         if outR >= output.outputChannels || outR == outL { outR = -1 }
@@ -259,7 +261,8 @@ final class AudioEngine: ObservableObject {
         let rate = rates.contains(audio.sampleRate) ? audio.sampleRate : (rates.contains(48000) ? 48000 : (rates.last ?? 0))
 
         var cfg = DTXHostConfig(inputDevice: input.id, outputDevice: output.id,
-                                inputChannel: Int32(inCh), outputChannelL: Int32(outL), outputChannelR: Int32(outR),
+                                inputChannel: Int32(inCh), inputChannelR: Int32(inR),
+                                outputChannelL: Int32(outL), outputChannelR: Int32(outR),
                                 sampleRate: rate, bufferFrames: UInt32(max(audio.bufferFrames, 8)),
                                 ioCycleUsage: Float(audio.ioCycleUsage))
         var st = DTXHostStatus()
@@ -350,13 +353,14 @@ final class AudioEngine: ObservableObject {
     }
 
     private func finishDiagnostic() {
-        var input = [Float](repeating: 0, count: diagFrames)
-        var output = [Float](repeating: 0, count: diagFrames)
+        let channels = Int(max(dtx_diag_channels(processor), 1))
+        var input = [Float](repeating: 0, count: diagFrames * channels)
+        var output = [Float](repeating: 0, count: diagFrames * channels)
         let n = Int(dtx_diag_copy(processor, &input, &output, Int32(diagFrames)))
         dtx_diag_reset(processor)
         guard n > 0 else { diagnostic = .failed("Nothing was recorded."); return }
-        input.removeSubrange(n...)
-        output.removeSubrange(n...)
+        input.removeSubrange((n * channels)...)
+        output.removeSubrange((n * channels)...)
         do {
             let fmt = DateFormatter()
             fmt.dateFormat = "yyyy-MM-dd HH-mm-ss"
@@ -365,8 +369,8 @@ final class AudioEngine: ObservableObject {
                 .appendingPathComponent(fmt.string(from: Date()), isDirectory: true)
             try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
             let rate = Int(hostInfo.sampleRate.rounded())
-            try WavWriter.writeFloat32(input, sampleRate: rate, to: base.appendingPathComponent("input.wav"))
-            try WavWriter.writeFloat32(output, sampleRate: rate, to: base.appendingPathComponent("output.wav"))
+            try WavWriter.writeFloat32(input, channels: channels, sampleRate: rate, to: base.appendingPathComponent("input.wav"))
+            try WavWriter.writeFloat32(output, channels: channels, sampleRate: rate, to: base.appendingPathComponent("output.wav"))
             try diagReport.write(to: base.appendingPathComponent("settings.txt"), atomically: true, encoding: .utf8)
             diagnostic = .saved(base)
             NSWorkspace.shared.activateFileViewerSelecting([base])
@@ -385,7 +389,7 @@ final class AudioEngine: ObservableObject {
         lines.append("App version: \(version)  arch: \(Self.architecture)")
         lines.append("Date: \(Date())")
         lines.append("")
-        lines.append("Input device:  \(currentInput?.name ?? "?")  [\(currentInput?.uid ?? "?")]  channel \(audio.inputChannel + 1) of \(currentInput?.inputChannels ?? 0)")
+        lines.append("Input device:  \(currentInput?.name ?? "?")  [\(currentInput?.uid ?? "?")]  channel \(audio.inputChannel + 1)\(audio.inputChannelR >= 0 ? "+\(audio.inputChannelR + 1) (stereo)" : " (mono)") of \(currentInput?.inputChannels ?? 0)")
         lines.append("Output device: \(currentOutput?.name ?? "?")  [\(currentOutput?.uid ?? "?")]  channels \(audio.outputChannelL + 1)\(audio.outputChannelR >= 0 ? "+\(audio.outputChannelR + 1)" : " (mono)") of \(currentOutput?.outputChannels ?? 0)")
         lines.append("Aggregate device: \(h.usingAggregate)")
         lines.append("Sample rate: \(h.sampleRate)  buffer: \(h.bufferFrames)  IO cycle usage: \(h.ioCycleUsage)")
@@ -462,9 +466,9 @@ enum DiagnosticStatus: Equatable {
     case failed(String)
 }
 
-/// Minimal 32-bit float mono WAV writer.
+/// Minimal 32-bit float WAV writer (interleaved samples).
 enum WavWriter {
-    static func writeFloat32(_ samples: [Float], sampleRate: Int, to url: URL) throws {
+    static func writeFloat32(_ samples: [Float], channels: Int = 1, sampleRate: Int, to url: URL) throws {
         var d = Data()
         func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
         func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
@@ -473,9 +477,9 @@ enum WavWriter {
         d.append(contentsOf: Array("WAVE".utf8))
         d.append(contentsOf: Array("fmt ".utf8)); u32(16)
         u16(3)                                  // IEEE float
-        u16(1)                                  // mono
-        u32(UInt32(sampleRate)); u32(UInt32(sampleRate * 4))
-        u16(4); u16(32)
+        u16(UInt16(channels))
+        u32(UInt32(sampleRate)); u32(UInt32(sampleRate * 4 * channels))
+        u16(UInt16(4 * channels)); u16(32)
         d.append(contentsOf: Array("data".utf8)); u32(dataBytes)
         samples.withUnsafeBufferPointer { d.append(Data(buffer: $0)) }   // Apple platforms are little-endian
         try d.write(to: url)

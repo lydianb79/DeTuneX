@@ -25,7 +25,8 @@ typedef struct DTXHost DTXHost;
 typedef struct {
     uint32_t inputDevice;      // AudioObjectID
     uint32_t outputDevice;     // AudioObjectID
-    int32_t  inputChannel;     // 0-based channel on the input device
+    int32_t  inputChannel;     // 0-based channel on the input device (left, or mono)
+    int32_t  inputChannelR;    // second input channel for stereo, or -1 for mono
     int32_t  outputChannelL;   // 0-based channel on the output device
     int32_t  outputChannelR;   // second output channel, or -1 for mono
     double   sampleRate;       // requested nominal rate (0 = keep device rate)

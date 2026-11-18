@@ -41,10 +41,20 @@ struct AudioSetupView: View {
                 }
             }
             if let dev = engine.currentInput {
-                Picker("Input channel", selection: $engine.audio.inputChannel) {
-                    ForEach(Array(AudioDevices.channelNames(dev, input: true).enumerated()), id: \.offset) { i, name in
-                        Text(name).tag(i)
+                Picker("Input channels", selection: inputPair) {
+                    let names = AudioDevices.channelNames(dev, input: true)
+                    ForEach(inputPairs(dev), id: \.self) { pair in
+                        if pair.r >= 0 {
+                            Text("\(pair.l + 1) + \(pair.r + 1)  (stereo)").tag(pair)
+                        } else {
+                            Text(pair.l < names.count ? "\(names[pair.l])  (mono)" : "\(pair.l + 1)  (mono)").tag(pair)
+                        }
                     }
+                }
+                if engine.audio.inputChannelR >= 0 {
+                    Label("Stereo: both sides are shifted with the same splice timing, so the stereo image stays put. With a mono output, the sides are summed.",
+                          systemImage: "speaker.wave.2")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             Picker("Output device", selection: outputUID) {
@@ -55,7 +65,7 @@ struct AudioSetupView: View {
             if let dev = engine.currentOutput {
                 Picker("Output channels", selection: outputPair) {
                     ForEach(outputPairs(dev), id: \.self) { pair in
-                        Text(pair.r >= 0 ? "\(pair.l + 1) + \(pair.r + 1)  (stereo, same signal)" : "\(pair.l + 1)  (mono)")
+                        Text(pair.r >= 0 ? "\(pair.l + 1) + \(pair.r + 1)  (stereo)" : "\(pair.l + 1)  (mono)")
                             .tag(pair)
                     }
                 }
@@ -230,8 +240,9 @@ struct AudioSetupView: View {
         Binding(get: { engine.currentInput?.uid },
                 set: { uid in
                     engine.audio.inputUID = uid
-                    if let d = engine.devices.first(where: { $0.uid == uid }), engine.audio.inputChannel >= d.inputChannels {
-                        engine.audio.inputChannel = 0
+                    if let d = engine.devices.first(where: { $0.uid == uid }) {
+                        if engine.audio.inputChannel >= d.inputChannels { engine.audio.inputChannel = 0 }
+                        if engine.audio.inputChannelR >= d.inputChannels { engine.audio.inputChannelR = -1 }
                     }
                 })
     }
@@ -248,6 +259,25 @@ struct AudioSetupView: View {
     }
 
     struct ChannelPair: Hashable { let l: Int; let r: Int }
+
+    private func inputPairs(_ d: AudioDevice) -> [ChannelPair] {
+        var pairs: [ChannelPair] = []
+        var c = 0
+        while c + 1 < d.inputChannels { pairs.append(ChannelPair(l: c, r: c + 1)); c += 2 }
+        for m in 0..<d.inputChannels { pairs.append(ChannelPair(l: m, r: -1)) }
+        return pairs
+    }
+
+    private var inputPair: Binding<ChannelPair> {
+        Binding(get: {
+                    let r = engine.audio.inputChannelR
+                    return ChannelPair(l: engine.audio.inputChannel, r: r == engine.audio.inputChannel + 1 ? r : -1)
+                },
+                set: { p in
+                    engine.audio.inputChannel = p.l
+                    engine.audio.inputChannelR = p.r
+                })
+    }
 
     private func outputPairs(_ d: AudioDevice) -> [ChannelPair] {
         var pairs: [ChannelPair] = []

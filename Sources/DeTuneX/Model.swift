@@ -91,6 +91,7 @@ struct AudioSettings: Codable, Equatable {
     var inputUID: String? = nil
     var outputUID: String? = nil
     var inputChannel: Int = 0
+    var inputChannelR: Int = -1        // second input channel for stereo, -1 = mono
     var outputChannelL: Int = 0
     var outputChannelR: Int = 1        // -1 = mono out
     var sampleRate: Double = 48000
@@ -105,6 +106,7 @@ struct AudioSettings: Codable, Equatable {
         inputUID = try c.decodeIfPresent(String.self, forKey: .inputUID) ?? d.inputUID
         outputUID = try c.decodeIfPresent(String.self, forKey: .outputUID) ?? d.outputUID
         inputChannel = try c.decodeIfPresent(Int.self, forKey: .inputChannel) ?? d.inputChannel
+        inputChannelR = try c.decodeIfPresent(Int.self, forKey: .inputChannelR) ?? d.inputChannelR
         outputChannelL = try c.decodeIfPresent(Int.self, forKey: .outputChannelL) ?? d.outputChannelL
         outputChannelR = try c.decodeIfPresent(Int.self, forKey: .outputChannelR) ?? d.outputChannelR
         sampleRate = try c.decodeIfPresent(Double.self, forKey: .sampleRate) ?? d.sampleRate

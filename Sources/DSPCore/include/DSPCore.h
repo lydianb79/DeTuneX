@@ -42,6 +42,13 @@ void  dtx_processor_reset(DTXProcessor* p);
 // Mono in → mono out. `in` and `out` may alias.
 void  dtx_processor_process(DTXProcessor* p, const float* in, float* out, int frames);
 
+// Linked stereo: one grain timeline for both sides (decisions on the mid signal).
+void  dtx_processor_process_stereo(DTXProcessor* p, const float* inL, const float* inR,
+                                   float* outL, float* outR, int frames);
+// 1 = mono, 2 = stereo. Call while audio is stopped (sets the diagnostic channel count).
+void  dtx_processor_set_channels(DTXProcessor* p, int channels);
+int   dtx_processor_get_channels(const DTXProcessor* p);
+
 void  dtx_set_param(DTXProcessor* p, DTXParam param, float value);
 float dtx_get_param(const DTXProcessor* p, DTXParam param);
 
@@ -52,12 +59,15 @@ float dtx_get_latency_samples(const DTXProcessor* p);     // algorithmic latency
 float dtx_take_meter_peak(DTXProcessor* p, DTXMeter which); // peak since last call (linear)
 
 // Diagnostic recorder (UI thread): records the raw input and the final output
-// of the next `frames` samples processed. begin() returns -1 if busy.
+// of the next `frames` frames processed. begin() returns -1 if busy.
 // state(): 0 idle, 1 recording, 2 done (then copy() returns the data).
+// Data is interleaved with dtx_diag_channels() channels; copy() buffers must
+// hold maxFrames * channels floats and it returns the number of frames.
 int   dtx_diag_begin(DTXProcessor* p, int frames);
 int   dtx_diag_state(const DTXProcessor* p, int* framesDone);
 int   dtx_diag_copy(DTXProcessor* p, float* in, float* out, int maxFrames);
 void  dtx_diag_reset(DTXProcessor* p);
+int   dtx_diag_channels(const DTXProcessor* p);
 
 // Copies the most recent `count` samples (count <= 4096) of the dry input and wet output.
 void  dtx_read_scope(const DTXProcessor* p, float* dry, float* wet, int count);

@@ -12,9 +12,12 @@ A native macOS app that does what the BOSS XS-1 Poly Shifter does: you plug a gu
 * **CoreMIDI** expression pedal / footswitch control, keyboard control
 * Six colour themes and its own app icon
 
-## What's new in 1.2
+## What's new in 1.3
 
-* **Fast attack** (on by default, switch next to the engine selector). When you pick or strum a new note, the shifter jumps straight to the newest audio, with a 2 ms crossfade, instead of waiting for a perfectly aligned splice. On a new strum while the previous chord still rings, the attack now arrives in about **2 ms instead of 13–18 ms** (Tight and Balanced; about 2.6 ms on Wide). Chord quality stays within about 1 dB. Upward shifts improve less, because reading faster than real time needs a head start.
+* **Stereo input.** In Audio Setup, choose an input pair such as **1 + 2 (stereo)**, for example for a stereo amp modeller like the Fractal AM4 on Apollo line inputs 1/2. Both sides are shifted with one shared splice timeline, worked out from the mid signal (L+R), so the stereo image stays put instead of wandering or phasing. With a mono output, the two sides are summed.
+* **Fast attack** (on by default; the switch is next to the engine selector). When you pick or strum a new note, the shifter jumps straight to the newest audio, with a 2 ms crossfade, instead of waiting for a perfectly aligned splice. A new strum while the previous chord still rings now comes through in about **2 ms instead of 13–18 ms**. Chord quality stays within about 1 dB.
+* **Diagnostic recording** (Audio Setup › Diagnostics) saves exactly what De-TuneX received and sent out, plus your settings. See [Diagnostics](#diagnostics).
+* **Only one copy can run.** A second copy, for example the arm64 and x86_64 builds side by side, would play its own (often bypassed, dry) output on top. A newly started copy now brings the running one to the front and quits.
 
 ## What's new in 1.1
 
@@ -150,6 +153,7 @@ If something sounds wrong, open **Audio Setup › Diagnostics** and click **Reco
 * pitch accuracy from −36 to +24 semitones on every engine (≤ 1 cent typical, apart from extreme up-shifts in Tight)
 * polyphony: steady E major and low-string E5 chords (share of output energy on the target partials), plus **strummed chords** from a realistic string model with slightly out-of-tune strings, scored as artifact energy in dB with a pass limit per engine (Tight −16, Balanced −24, Wide −28, Studio −32 dB)
 * level stability (< 0.05 dB ripple, unity gain)
+* linked stereo: identical L/R gives exactly the mono result, zero crosstalk between sides, and correct pitch per side on every engine
 * latency, rise/fall glides, expression scaling, bit-exact bypass, and CPU load (≈ 2 % of one core per engine)
 
 Known limitation, reported by the test as INFO: **Tight** is weak on low-string chords, because its grains are shorter than the chord's period. Use **Balanced**, **Wide** or **Studio** for chords.
@@ -168,6 +172,6 @@ scripts/run_tests.sh    runs the DSP test suite
 scripts/make_icon.py    regenerates the app icon
 ```
 
-Settings (devices, buffer, output timing, setups, MIDI map, theme) persist in `UserDefaults`.
+Settings (devices, input/output channels including stereo, buffer, output timing, setups, MIDI map, theme) persist in `UserDefaults`.
 
 *BOSS and XS-1 are trademarks of Roland Corporation. De-TuneX is an independent project, not affiliated with or endorsed by Roland, and it uses its own algorithms.*

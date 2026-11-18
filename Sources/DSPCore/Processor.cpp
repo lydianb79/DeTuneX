@@ -68,6 +68,8 @@ struct DTXProcessor {
     std::atomic<int> diagState{0};   // 0 idle, 1 recording, 2 done
     std::atomic<int> diagPos{0};
     int diagLen = 0;
+    int diagChannels = 1;
+    int channels = 1;                // 1 = mono, 2 = stereo (set before audio starts)
     std::vector<float> diagIn, diagOut;
 
     // ---- audio thread state ---------------------------------------------
@@ -140,6 +142,19 @@ struct DTXProcessor {
     }
 
     void process(const float* in, float* out, int frames) {
+        const float* ins[1] = {in};
+        float* outs[1] = {out};
+        processN<1>(ins, outs, frames);
+    }
+
+    void processStereo(const float* inL, const float* inR, float* outL, float* outR, int frames) {
+        const float* ins[2] = {inL, inR};
+        float* outs[2] = {outL, outR};
+        processN<2>(ins, outs, frames);
+    }
+
+    template <int N>
+    void processN(const float* const* in, float* const* out, int frames) {
         ScopedFlushDenormals ftz;
 
         // --- block-rate parameter reads ---
@@ -186,7 +201,8 @@ struct DTXProcessor {
             balDry += (balDryT - balDry) * paramCoef;
             balWet += (balWetT - balWet) * paramCoef;
 
-            const float x = in[i] * inGain;
+            float x[N];
+            for (int c = 0; c < N; ++c) x[c] = in[c][i] * inGain;
 
             // Glide (rise when engaged, fall when released).
             if (engaged) glide = std::min(1.f, glide + riseStep);
@@ -203,18 +219,33 @@ struct DTXProcessor {
             else           bypassGain = std::max(0.f, bypassGain - bypassStep);
 
             // Engine changes take effect at the next grain boundary (click-free).
-            const float shifted = grain.process(x, ratio);
+            // Stereo uses one linked grain timeline for both sides.
+            float shifted[N];
+            if (N == 1) shifted[0] = grain.process(x[0], ratio);
+            else        grain.processStereo(x[0], x[N - 1], ratio, shifted[0], shifted[N - 1]);
 
-            const float effect = balDry * x + balWet * shifted;
-            float y = x + (effect - x) * bypassGain;
-            y = softLimit(y * outGain);
-            out[i] = y;
-            if (diag && dpos < diagLen) { diagIn[dpos] = in[i]; diagOut[dpos] = y; ++dpos; }
+            float y[N];
+            float dryMon = 0.f, wetMon = 0.f;
+            for (int c = 0; c < N; ++c) {
+                const float effect = balDry * x[c] + balWet * shifted[c];
+                y[c] = softLimit((x[c] + (effect - x[c]) * bypassGain) * outGain);
+                out[c][i] = y[c];
+                pkIn = std::max(pkIn, std::fabs(x[c]));
+                pkOut = std::max(pkOut, std::fabs(y[c]));
+                dryMon += x[c];
+                wetMon += y[c];
+            }
+            if (diag && dpos < diagLen) {
+                for (int c = 0; c < diagChannels; ++c) {
+                    const int k = c < N ? c : 0;
+                    diagIn[(size_t)dpos * diagChannels + c] = in[k][i];
+                    diagOut[(size_t)dpos * diagChannels + c] = y[k];
+                }
+                ++dpos;
+            }
 
-            pkIn = std::max(pkIn, std::fabs(x));
-            pkOut = std::max(pkOut, std::fabs(y));
-            scopeDry[sw].store(x, std::memory_order_relaxed);
-            scopeWet[sw].store(y, std::memory_order_relaxed);
+            scopeDry[sw].store(dryMon / N, std::memory_order_relaxed);
+            scopeWet[sw].store(wetMon / N, std::memory_order_relaxed);
             if (++sw == kScopeSize) sw = 0;
         }
 
@@ -250,6 +281,14 @@ void dtx_processor_process(DTXProcessor* p, const float* in, float* out, int fra
     if (frames > 0) p->process(in, out, frames);
 }
 
+void dtx_processor_process_stereo(DTXProcessor* p, const float* inL, const float* inR,
+                                  float* outL, float* outR, int frames) {
+    if (frames > 0) p->processStereo(inL, inR, outL, outR, frames);
+}
+
+void dtx_processor_set_channels(DTXProcessor* p, int channels) { p->channels = channels >= 2 ? 2 : 1; }
+int  dtx_processor_get_channels(const DTXProcessor* p) { return p->channels; }
+
 void dtx_set_param(DTXProcessor* p, DTXParam param, float value) {
     if (param >= 0 && param < DTX_PARAM_COUNT && std::isfinite(value))
         p->params[param].store(value, std::memory_order_relaxed);
@@ -271,8 +310,9 @@ float dtx_take_meter_peak(DTXProcessor* p, DTXMeter which) {
 
 int dtx_diag_begin(DTXProcessor* p, int frames) {
     if (frames <= 0 || p->diagState.load(std::memory_order_acquire) == 1) return -1;
-    p->diagIn.assign((size_t)frames, 0.f);
-    p->diagOut.assign((size_t)frames, 0.f);
+    p->diagChannels = p->channels;
+    p->diagIn.assign((size_t)frames * p->diagChannels, 0.f);
+    p->diagOut.assign((size_t)frames * p->diagChannels, 0.f);
     p->diagLen = frames;
     p->diagPos.store(0, std::memory_order_relaxed);
     p->diagState.store(1, std::memory_order_release);
@@ -286,11 +326,14 @@ int dtx_diag_state(const DTXProcessor* p, int* framesDone) {
 
 int dtx_diag_copy(DTXProcessor* p, float* in, float* out, int maxFrames) {
     if (p->diagState.load(std::memory_order_acquire) != 2) return 0;
-    const int n = std::min(maxFrames, p->diagLen);
-    if (in) std::copy(p->diagIn.begin(), p->diagIn.begin() + n, in);
-    if (out) std::copy(p->diagOut.begin(), p->diagOut.begin() + n, out);
+    const int n = std::min(maxFrames, p->diagLen);            // frames
+    const size_t count = (size_t)n * p->diagChannels;         // interleaved samples
+    if (in) std::copy(p->diagIn.begin(), p->diagIn.begin() + count, in);
+    if (out) std::copy(p->diagOut.begin(), p->diagOut.begin() + count, out);
     return n;
 }
+
+int dtx_diag_channels(const DTXProcessor* p) { return p->diagChannels; }
 
 void dtx_diag_reset(DTXProcessor* p) {
     if (p->diagState.load(std::memory_order_acquire) == 1) return;

@@ -375,6 +375,87 @@ static void testDiagnosticRecorder() {
     dtx_processor_destroy(p);
 }
 
+// ---------------------------------------------------------------------------
+// Linked stereo
+// ---------------------------------------------------------------------------
+static void renderStereo(DTXProcessor* p, const std::vector<float>& l, const std::vector<float>& r,
+                         std::vector<float>& ol, std::vector<float>& orr) {
+    ol.assign(l.size(), 0.f); orr.assign(l.size(), 0.f);
+    for (size_t i = 0; i < l.size(); i += 64) {
+        const int n = (int)std::min<size_t>(64, l.size() - i);
+        dtx_processor_process_stereo(p, l.data() + i, r.data() + i, ol.data() + i, orr.data() + i, n);
+    }
+}
+
+static void testStereo() {
+    // 1) L == R must give exactly the mono result on both sides.
+    {
+        auto in = tones({164.81, 246.94, 329.63}, (int)SR, 0.15);
+        DTXProcessor* pm = makeProc(1, -2.f);
+        auto mono = render(pm, in);
+        dtx_processor_destroy(pm);
+        DTXProcessor* ps = makeProc(1, -2.f);
+        dtx_processor_set_channels(ps, 2);
+        std::vector<float> ol, orr;
+        renderStereo(ps, in, in, ol, orr);
+        dtx_processor_destroy(ps);
+        double maxErr = 0;
+        for (size_t i = 0; i < in.size(); ++i) maxErr = std::max({maxErr, (double)std::fabs(ol[i] - mono[i]), (double)std::fabs(orr[i] - mono[i])});
+        char msg[160];
+        std::snprintf(msg, sizeof msg, "stereo with identical L/R equals mono processing (max diff %.1e)", maxErr);
+        check(maxErr < 1e-5, msg);
+    }
+    // 2) No crosstalk: signal on L only -> R output silent.
+    {
+        auto in = tones({196.0}, (int)SR, 0.3);
+        std::vector<float> silent(in.size(), 0.f), ol, orr;
+        DTXProcessor* ps = makeProc(2, -5.f);
+        dtx_processor_set_channels(ps, 2);
+        renderStereo(ps, in, silent, ol, orr);
+        dtx_processor_destroy(ps);
+        double pr = 0; for (float v : orr) pr = std::max(pr, (double)std::fabs(v));
+        auto pk = peaks(ol, (size_t)SR / 4, 1);
+        const double expect = 196.0 * std::pow(2.0, -5.0 / 12.0);
+        char msg[200];
+        std::snprintf(msg, sizeof msg, "stereo: no crosstalk (R peak %.1e) and L shifted to %.2f Hz (expect %.2f)", pr, pk.empty() ? 0.0 : pk[0].second, expect);
+        check(pr < 1e-6 && !pk.empty() && std::fabs(cents(pk[0].second, expect)) < 10, msg);
+    }
+    // 3) Different notes per side are each shifted correctly (common timeline).
+    for (int e = 0; e < 4; ++e) {
+        auto l = tones({196.0}, (int)SR * 2, 0.3), r = tones({293.66}, (int)SR * 2, 0.3);
+        std::vector<float> ol, orr;
+        DTXProcessor* ps = makeProc(e, -5.f);
+        dtx_processor_set_channels(ps, 2);
+        renderStereo(ps, l, r, ol, orr);
+        dtx_processor_destroy(ps);
+        const double k = std::pow(2.0, -5.0 / 12.0);
+        auto pl = peaks(ol, (size_t)SR / 2, 1), pr = peaks(orr, (size_t)SR / 2, 1);
+        const double el = pl.empty() ? 999 : cents(pl[0].second, 196.0 * k), er = pr.empty() ? 999 : cents(pr[0].second, 293.66 * k);
+        char msg[200];
+        std::snprintf(msg, sizeof msg, "%-8s stereo, different notes per side: L %+5.1f cents, R %+5.1f cents", engineName(e), el, er);
+        check(std::fabs(el) < 10 && std::fabs(er) < 10, msg);
+    }
+    // 4) Diagnostic recorder captures both channels interleaved.
+    {
+        auto l = tones({196.0}, 6000, 0.3), r = tones({330.0}, 6000, 0.2);
+        std::vector<float> ol(l.size()), orr(l.size());
+        DTXProcessor* ps = makeProc(1, -2.f);
+        dtx_processor_set_channels(ps, 2);
+        const int N = 4000;
+        bool ok = dtx_diag_begin(ps, N) == 0 && dtx_diag_channels(ps) == 2;
+        for (size_t i = 0; i < l.size(); i += 64) {
+            const int n = (int)std::min<size_t>(64, l.size() - i);
+            dtx_processor_process_stereo(ps, l.data() + i, r.data() + i, ol.data() + i, orr.data() + i, n);
+        }
+        std::vector<float> ri(2 * N), ro(2 * N);
+        ok = ok && dtx_diag_copy(ps, ri.data(), ro.data(), N) == N;
+        for (int i = 0; i < N && ok; ++i)
+            ok = ri[2 * i] == l[i] && ri[2 * i + 1] == r[i] && ro[2 * i] == ol[i] && ro[2 * i + 1] == orr[i];
+        check(ok, "stereo diagnostic recorder captures both channels sample-exactly");
+        dtx_processor_destroy(ps);
+    }
+}
+
 int main() {
     std::puts("Pitch accuracy (single notes)");
     const float shifts[] = {-36, -24, -12, -7, -5, -1, -0.2f, 0.2f, 1, 2, 5, 7, 12, 24};
@@ -405,6 +486,8 @@ int main() {
     testGlide();
     testBypass();
     testDiagnosticRecorder();
+    std::puts("Stereo");
+    testStereo();
     std::puts("CPU");
     testCpu();
     std::printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");

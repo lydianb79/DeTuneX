@@ -188,7 +188,8 @@ struct DTXHost {
     AudioBufferList* inABL = nullptr;
     std::vector<float> inMem;
     UInt32 inChannels = 0, outChannels = 0;
-    int inCh = 0, outL = 0, outR = -1;
+    int inCh = 0, inChR = -1, outL = 0, outR = -1;
+    std::vector<float> scratchR;   // right output when stereo input goes to a mono output
 
     std::atomic<bool> running{false};
     std::atomic<bool> deviceLost{false};
@@ -215,9 +216,18 @@ struct DTXHost {
         const float* in = static_cast<const float*>(h->inABL->mBuffers[h->inCh].mData);
         if ((UInt32)h->outL < io->mNumberBuffers) {
             float* l = static_cast<float*>(io->mBuffers[h->outL].mData);
-            dtx_processor_process(h->proc, in, l, (int)frames);
-            if (h->outR >= 0 && (UInt32)h->outR < io->mNumberBuffers)
-                std::memcpy(io->mBuffers[h->outR].mData, l, frames * sizeof(float));
+            const bool stereoOut = h->outR >= 0 && (UInt32)h->outR < io->mNumberBuffers;
+            if (h->inChR >= 0) {
+                // Linked stereo: left/right inputs -> left/right outputs.
+                const float* inR = static_cast<const float*>(h->inABL->mBuffers[h->inChR].mData);
+                float* r = stereoOut ? static_cast<float*>(io->mBuffers[h->outR].mData) : h->scratchR.data();
+                dtx_processor_process_stereo(h->proc, in, inR, l, r, (int)frames);
+                if (!stereoOut)   // mono output: sum both sides
+                    for (UInt32 i = 0; i < frames; ++i) l[i] = 0.5f * (l[i] + r[i]);
+            } else {
+                dtx_processor_process(h->proc, in, l, (int)frames);
+                if (stereoOut) std::memcpy(io->mBuffers[h->outR].mData, l, frames * sizeof(float));
+            }
         }
 
         const double used = (double)(mach_absolute_time() - t0) * h->ticksToSec;
@@ -307,6 +317,9 @@ struct DTXHost {
         const UInt32 devIn = channelCount(cfg.inputDevice, kAudioObjectPropertyScopeInput);
         const UInt32 devOut = channelCount(cfg.outputDevice, kAudioObjectPropertyScopeOutput);
         if (cfg.inputChannel < 0 || (UInt32)cfg.inputChannel >= devIn) { err = "Input channel not available on this device."; return -1; }
+        if (cfg.inputChannelR >= 0 && ((UInt32)cfg.inputChannelR >= devIn || cfg.inputChannelR == cfg.inputChannel)) {
+            err = "Second input channel not available on this device."; return -1;
+        }
         if (cfg.outputChannelL < 0 || (UInt32)cfg.outputChannelL >= devOut) { err = "Output channel not available on this device."; return -1; }
 
         // Bring both devices to the requested rate before aggregating (avoids
@@ -331,6 +344,7 @@ struct DTXHost {
             setBufferSize(cfg.outputDevice, cfg.bufferFrames);
         }
         inCh = cfg.inputChannel + inOffset;
+        inChR = cfg.inputChannelR >= 0 ? cfg.inputChannelR + inOffset : -1;
         outL = cfg.outputChannelL + outOffset;
         outR = cfg.outputChannelR >= 0 ? cfg.outputChannelR + outOffset : -1;
 
@@ -372,6 +386,8 @@ struct DTXHost {
         inChannels = hwIn.mChannelsPerFrame;
         outChannels = hwOut.mChannelsPerFrame;
         if (inChannels == 0 || (UInt32)inCh >= inChannels) return fail("Input channel out of range on the running device", -1);
+        if (inChR >= (int)inChannels) inChR = -1;
+        scratchR.assign(kMaxFrames, 0.f);
         if (outChannels == 0 || (UInt32)outL >= outChannels) return fail("Output channel out of range on the running device", -1);
         if (outR >= (int)outChannels) outR = -1;
 
@@ -407,6 +423,7 @@ struct DTXHost {
         AURenderCallbackStruct cb{&DTXHost::render, this};
         if ((s = AudioUnitSetProperty(au, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb))) return fail("Render callback", s);
 
+        dtx_processor_set_channels(proc, inChR >= 0 ? 2 : 1);
         dtx_processor_prepare(proc, rate, (int)kMaxFrames);
 
         mach_timebase_info_data_t tb;
