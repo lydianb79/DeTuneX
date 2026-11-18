@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import AudioHost
 import Combine
@@ -78,6 +79,9 @@ final class AudioEngine: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var hostInfo = HostInfo()
     @Published private(set) var lastMIDIEvent: String = "—"
+    @Published private(set) var diagnostic: DiagnosticStatus = .idle
+    private var diagFrames = 0
+    private var diagReport = ""
 
     private var restartWork: DispatchWorkItem?
     private var timer: Timer?
@@ -294,6 +298,7 @@ final class AudioEngine: ObservableObject {
             scheduleRestart(delay: 0.3)
             return
         }
+        pollDiagnostic()
         let inPk = dtx_take_meter_peak(processor, DTX_METER_INPUT)
         let outPk = dtx_take_meter_peak(processor, DTX_METER_OUTPUT)
         peakIn = max(inPk, peakIn * 0.85)
@@ -312,6 +317,102 @@ final class AudioEngine: ObservableObject {
             ? Double(dtx_get_latency_samples(processor)) * 1000 / hostInfo.sampleRate : 0
         s.dspLoad = dtx_host_dsp_load(host)
         s.overloads = dtx_host_overload_count(host)
+    }
+
+    // MARK: - Diagnostic recording
+
+    /// Records the raw input and the final output of the next `seconds` of audio.
+    func startDiagnostic(seconds: Double = 10) {
+        guard isRunning, hostInfo.sampleRate > 0 else {
+            diagnostic = .failed("Start the audio first.")
+            return
+        }
+        let frames = Int(seconds * hostInfo.sampleRate)
+        dtx_diag_reset(processor)
+        guard dtx_diag_begin(processor, Int32(frames)) == 0 else {
+            diagnostic = .failed("A recording is already running.")
+            return
+        }
+        diagFrames = frames
+        diagReport = settingsReport()
+        diagnostic = .recording(0)
+    }
+
+    private func pollDiagnostic() {
+        guard case .recording = diagnostic else { return }
+        var done: Int32 = 0
+        let state = dtx_diag_state(processor, &done)
+        if state == 2 {
+            finishDiagnostic()
+        } else {
+            diagnostic = .recording(diagFrames > 0 ? Double(done) / Double(diagFrames) : 0)
+        }
+    }
+
+    private func finishDiagnostic() {
+        var input = [Float](repeating: 0, count: diagFrames)
+        var output = [Float](repeating: 0, count: diagFrames)
+        let n = Int(dtx_diag_copy(processor, &input, &output, Int32(diagFrames)))
+        dtx_diag_reset(processor)
+        guard n > 0 else { diagnostic = .failed("Nothing was recorded."); return }
+        input.removeSubrange(n...)
+        output.removeSubrange(n...)
+        do {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyy-MM-dd HH-mm-ss"
+            let base = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("De-TuneX Diagnostics", isDirectory: true)
+                .appendingPathComponent(fmt.string(from: Date()), isDirectory: true)
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            let rate = Int(hostInfo.sampleRate.rounded())
+            try WavWriter.writeFloat32(input, sampleRate: rate, to: base.appendingPathComponent("input.wav"))
+            try WavWriter.writeFloat32(output, sampleRate: rate, to: base.appendingPathComponent("output.wav"))
+            try diagReport.write(to: base.appendingPathComponent("settings.txt"), atomically: true, encoding: .utf8)
+            diagnostic = .saved(base)
+            NSWorkspace.shared.activateFileViewerSelecting([base])
+        } catch {
+            diagnostic = .failed("Could not save: \(error.localizedDescription)")
+        }
+    }
+
+    private func settingsReport() -> String {
+        let s = activeSetup
+        let info = Bundle.main.infoDictionary
+        let version = (info?["CFBundleShortVersionString"] as? String ?? "?") + " (" + (info?["CFBundleVersion"] as? String ?? "?") + ")"
+        let h = hostInfo
+        var lines: [String] = []
+        lines.append("De-TuneX diagnostic recording")
+        lines.append("App version: \(version)  arch: \(Self.architecture)")
+        lines.append("Date: \(Date())")
+        lines.append("")
+        lines.append("Input device:  \(currentInput?.name ?? "?")  [\(currentInput?.uid ?? "?")]  channel \(audio.inputChannel + 1) of \(currentInput?.inputChannels ?? 0)")
+        lines.append("Output device: \(currentOutput?.name ?? "?")  [\(currentOutput?.uid ?? "?")]  channels \(audio.outputChannelL + 1)\(audio.outputChannelR >= 0 ? "+\(audio.outputChannelR + 1)" : " (mono)") of \(currentOutput?.outputChannels ?? 0)")
+        lines.append("Aggregate device: \(h.usingAggregate)")
+        lines.append("Sample rate: \(h.sampleRate)  buffer: \(h.bufferFrames)  IO cycle usage: \(h.ioCycleUsage)")
+        lines.append("Driver latency frames: in \(h.inputLatencyFrames)  out \(h.outputLatencyFrames)")
+        lines.append("")
+        lines.append("Effect engaged at start: \(engaged)")
+        lines.append("Setup: \(["A", "B", "C"][perf.activeSetup])  shift: \(s.shift.longLabel)  up: \(s.up)  detune cents: \(s.detuneCents)  -> \(s.semitones) semitones")
+        lines.append("Balance: \(s.balance)  pedal mode: \(perf.pedalMode.rawValue)  rise: \(perf.riseMs) ms  fall: \(perf.fallMs) ms")
+        lines.append("Engine: \(perf.engine.name)  fast attack: \(fastAttack)")
+        lines.append("Expression active: \(perf.expressionActive)  expression: \(expression)")
+        lines.append("Input gain: \(perf.inputGainDb) dB  output level: \(perf.outputGainDb) dB")
+        lines.append("Shifter latency now: \(String(format: "%.2f", stats.algorithmLatencyMs)) ms  current shift: \(stats.currentSemitones) st")
+        lines.append("DSP load: \(stats.dspLoad)  dropouts: \(stats.overloads)")
+        lines.append("")
+        lines.append("input.wav  = raw samples received from the input channel (before input gain)")
+        lines.append("output.wav = final samples sent to the output channel(s)")
+        return lines.joined(separator: "\n")
+    }
+
+    private static var architecture: String {
+        #if arch(arm64)
+        return "arm64"
+        #elseif arch(x86_64)
+        return "x86_64"
+        #else
+        return "unknown"
+        #endif
     }
 
     // MARK: - MIDI
@@ -351,6 +452,33 @@ final class AudioEngine: ObservableObject {
         case let .programChange(_, program):
             if map.programChangeSelectsSetup && program < perf.setups.count { selectSetup(program) }
         }
+    }
+}
+
+enum DiagnosticStatus: Equatable {
+    case idle
+    case recording(Double)      // progress 0…1
+    case saved(URL)
+    case failed(String)
+}
+
+/// Minimal 32-bit float mono WAV writer.
+enum WavWriter {
+    static func writeFloat32(_ samples: [Float], sampleRate: Int, to url: URL) throws {
+        var d = Data()
+        func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
+        func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
+        let dataBytes = UInt32(samples.count * 4)
+        d.append(contentsOf: Array("RIFF".utf8)); u32(36 + dataBytes)
+        d.append(contentsOf: Array("WAVE".utf8))
+        d.append(contentsOf: Array("fmt ".utf8)); u32(16)
+        u16(3)                                  // IEEE float
+        u16(1)                                  // mono
+        u32(UInt32(sampleRate)); u32(UInt32(sampleRate * 4))
+        u16(4); u16(32)
+        d.append(contentsOf: Array("data".utf8)); u32(dataBytes)
+        samples.withUnsafeBufferPointer { d.append(Data(buffer: $0)) }   // Apple platforms are little-endian
+        try d.write(to: url)
     }
 }
 

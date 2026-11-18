@@ -356,6 +356,25 @@ static void testAttack(int engine, double maxMs) {
     check(on <= maxMs && on < off, msg);
 }
 
+static void testDiagnosticRecorder() {
+    DTXProcessor* p = makeProc(1, -2.f);
+    auto in = tones({196.0}, 9000, 0.3);
+    std::vector<float> out(in.size());
+    dtx_processor_process(p, in.data(), out.data(), 1000);              // not recorded
+    const int N = 5000;
+    bool ok = dtx_diag_begin(p, N) == 0 && dtx_diag_begin(p, N) == -1;  // second begin refused while busy
+    for (int i = 1000; i < 9000; i += 64) dtx_processor_process(p, in.data() + i, out.data() + i, std::min(64, 9000 - i));
+    int done = 0;
+    ok = ok && dtx_diag_state(p, &done) == 2 && done == N;
+    std::vector<float> ri(N), ro(N);
+    ok = ok && dtx_diag_copy(p, ri.data(), ro.data(), N) == N;
+    for (int i = 0; i < N && ok; ++i) ok = ri[i] == in[1000 + i] && ro[i] == out[1000 + i];
+    dtx_diag_reset(p);
+    ok = ok && dtx_diag_state(p, nullptr) == 0;
+    check(ok, "diagnostic recorder captures input and output sample-exactly");
+    dtx_processor_destroy(p);
+}
+
 int main() {
     std::puts("Pitch accuracy (single notes)");
     const float shifts[] = {-36, -24, -12, -7, -5, -1, -0.2f, 0.2f, 1, 2, 5, 7, 12, 24};
@@ -385,6 +404,7 @@ int main() {
     std::puts("Control behaviour");
     testGlide();
     testBypass();
+    testDiagnosticRecorder();
     std::puts("CPU");
     testCpu();
     std::printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");

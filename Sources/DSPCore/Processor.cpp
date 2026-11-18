@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <xmmintrin.h>
@@ -60,6 +61,14 @@ struct DTXProcessor {
     std::atomic<float> peakIn{0.f}, peakOut{0.f};
     std::atomic<float> scopeDry[kScopeSize], scopeWet[kScopeSize];
     std::atomic<int> scopeWrite{0};
+
+    // Diagnostic recorder: raw input and final output, sample-exact.
+    // Buffers are (re)allocated only while diagState == 0 (idle) or 2 (done),
+    // i.e. never while the audio thread writes them.
+    std::atomic<int> diagState{0};   // 0 idle, 1 recording, 2 done
+    std::atomic<int> diagPos{0};
+    int diagLen = 0;
+    std::vector<float> diagIn, diagOut;
 
     // ---- audio thread state ---------------------------------------------
     double sr = 48000.0;
@@ -168,6 +177,8 @@ struct DTXProcessor {
 
         float pkIn = 0.f, pkOut = 0.f;
         int sw = scopeWrite.load(std::memory_order_relaxed);
+        const bool diag = diagState.load(std::memory_order_acquire) == 1;
+        int dpos = diag ? diagPos.load(std::memory_order_relaxed) : 0;
 
         for (int i = 0; i < frames; ++i) {
             inGain += (inGainT - inGain) * paramCoef;
@@ -198,6 +209,7 @@ struct DTXProcessor {
             float y = x + (effect - x) * bypassGain;
             y = softLimit(y * outGain);
             out[i] = y;
+            if (diag && dpos < diagLen) { diagIn[dpos] = in[i]; diagOut[dpos] = y; ++dpos; }
 
             pkIn = std::max(pkIn, std::fabs(x));
             pkOut = std::max(pkOut, std::fabs(y));
@@ -207,6 +219,10 @@ struct DTXProcessor {
         }
 
         scopeWrite.store(sw, std::memory_order_release);
+        if (diag) {
+            diagPos.store(dpos, std::memory_order_relaxed);
+            if (dpos >= diagLen) diagState.store(2, std::memory_order_release);
+        }
         curSemis.store(semisSmooth, std::memory_order_relaxed);
         wetAmount.store(bypassGain, std::memory_order_relaxed);
         latency.store(grain.latency(), std::memory_order_relaxed);
@@ -251,6 +267,37 @@ float dtx_get_latency_samples(const DTXProcessor* p) { return p->latency.load(st
 float dtx_take_meter_peak(DTXProcessor* p, DTXMeter which) {
     auto& a = which == DTX_METER_INPUT ? p->peakIn : p->peakOut;
     return a.exchange(0.f, std::memory_order_relaxed);
+}
+
+int dtx_diag_begin(DTXProcessor* p, int frames) {
+    if (frames <= 0 || p->diagState.load(std::memory_order_acquire) == 1) return -1;
+    p->diagIn.assign((size_t)frames, 0.f);
+    p->diagOut.assign((size_t)frames, 0.f);
+    p->diagLen = frames;
+    p->diagPos.store(0, std::memory_order_relaxed);
+    p->diagState.store(1, std::memory_order_release);
+    return 0;
+}
+
+int dtx_diag_state(const DTXProcessor* p, int* framesDone) {
+    if (framesDone) *framesDone = p->diagPos.load(std::memory_order_relaxed);
+    return p->diagState.load(std::memory_order_acquire);
+}
+
+int dtx_diag_copy(DTXProcessor* p, float* in, float* out, int maxFrames) {
+    if (p->diagState.load(std::memory_order_acquire) != 2) return 0;
+    const int n = std::min(maxFrames, p->diagLen);
+    if (in) std::copy(p->diagIn.begin(), p->diagIn.begin() + n, in);
+    if (out) std::copy(p->diagOut.begin(), p->diagOut.begin() + n, out);
+    return n;
+}
+
+void dtx_diag_reset(DTXProcessor* p) {
+    if (p->diagState.load(std::memory_order_acquire) == 1) return;
+    p->diagState.store(0, std::memory_order_release);
+    p->diagLen = 0;
+    std::vector<float>().swap(p->diagIn);
+    std::vector<float>().swap(p->diagOut);
 }
 
 void dtx_read_scope(const DTXProcessor* p, float* dry, float* wet, int count) {

@@ -51,6 +51,14 @@ float dtx_get_wet_amount(const DTXProcessor* p);          // 0..1 effect engagem
 float dtx_get_latency_samples(const DTXProcessor* p);     // algorithmic latency of active engine
 float dtx_take_meter_peak(DTXProcessor* p, DTXMeter which); // peak since last call (linear)
 
+// Diagnostic recorder (UI thread): records the raw input and the final output
+// of the next `frames` samples processed. begin() returns -1 if busy.
+// state(): 0 idle, 1 recording, 2 done (then copy() returns the data).
+int   dtx_diag_begin(DTXProcessor* p, int frames);
+int   dtx_diag_state(const DTXProcessor* p, int* framesDone);
+int   dtx_diag_copy(DTXProcessor* p, float* in, float* out, int maxFrames);
+void  dtx_diag_reset(DTXProcessor* p);
+
 // Copies the most recent `count` samples (count <= 4096) of the dry input and wet output.
 void  dtx_read_scope(const DTXProcessor* p, float* dry, float* wet, int count);
 

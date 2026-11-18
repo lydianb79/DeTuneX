@@ -1,3 +1,4 @@
+import AppKit
 import CoreAudio
 import SwiftUI
 
@@ -23,6 +24,7 @@ struct AudioSetupView: View {
                 latencySection
                 gainSection
                 midiSection
+                diagnosticsSection
             }
             .formStyle(.grouped)
         }
@@ -168,6 +170,41 @@ struct AudioSetupView: View {
         } footer: {
             Text("Any MIDI expression pedal or footswitch controller works (e.g. via a MIDI-to-USB adapter or a pedal-to-MIDI converter).")
         }
+    }
+
+    // MARK: Diagnostics
+
+    private var diagnosticsSection: some View {
+        Section {
+            HStack {
+                Button("Record 10-second diagnostic") { engine.startDiagnostic() }
+                    .disabled(!engine.isRunning || isRecording)
+                Spacer()
+                switch engine.diagnostic {
+                case .idle:
+                    EmptyView()
+                case .recording(let p):
+                    ProgressView(value: p).frame(width: 140)
+                    Text("Recording…").font(.caption).foregroundStyle(.secondary)
+                case .saved(let url):
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                case .failed(let msg):
+                    Text(msg).font(.caption).foregroundStyle(.orange)
+                }
+            }
+            if case .saved(let url) = engine.diagnostic {
+                Text("Saved to \(url.path)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+        } header: {
+            Text("Diagnostics")
+        } footer: {
+            Text("Saves exactly what De-TuneX receives (input.wav) and sends out (output.wav) for the next 10 seconds, plus your settings (settings.txt), in Music › De-TuneX Diagnostics. Switch the effect on and play while it records.")
+        }
+    }
+
+    private var isRecording: Bool {
+        if case .recording = engine.diagnostic { return true }
+        return false
     }
 
     private struct MIDISourcesRow: View {

@@ -139,6 +139,10 @@ All four engines use the same correlation-aligned granular shifter with differen
 
 Versions before 1.1 had a phase-vocoder Studio engine. It measured far worse on real chords (−15 dB) at a higher delay (43 ms), so it was replaced.
 
+## Diagnostics
+
+If something sounds wrong, open **Audio Setup › Diagnostics** and click **Record 10-second diagnostic** while you play with the effect on. It saves exactly what De-TuneX received (`input.wav`) and sent out (`output.wav`), plus your settings (`settings.txt`), in **Music › De-TuneX Diagnostics**. The files show whether a problem is inside the app or in the routing after it.
+
 ## Verification
 
 `bash scripts/run_tests.sh` builds and runs `Tests/dsp_offline_test.cpp`. It runs on macOS or Linux and checks:
