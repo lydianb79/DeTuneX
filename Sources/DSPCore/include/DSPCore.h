@@ -25,6 +25,7 @@ typedef enum {
     DTX_PARAM_ENGINE,               // 0 Tight, 1 Balanced, 2 Wide, 3 Studio (grain configurations)
     DTX_PARAM_INPUT_GAIN_DB,        // -24..+24
     DTX_PARAM_OUTPUT_GAIN_DB,       // -24..+24
+    DTX_PARAM_FAST_ATTACK,          // 0/1   cut to minimum delay on pick attacks (default 1)
     DTX_PARAM_COUNT
 } DTXParam;
 

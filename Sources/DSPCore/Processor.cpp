@@ -65,6 +65,7 @@ struct DTXProcessor {
     double sr = 48000.0;
     dtx::GrainShifter grain;
     int currentGrainMode = -1;
+    int currentFastAttack = -1;
 
     float glide = 0.f;          // 0..1 glide position
     float semisSmooth = 0.f;    // smoothed effective shift
@@ -83,7 +84,8 @@ struct DTXProcessor {
             0.f,    // EXPRESSION_ACTIVE
             1.f,    // ENGINE (Balanced)
             0.f,    // INPUT GAIN
-            0.f     // OUTPUT GAIN
+            0.f,    // OUTPUT GAIN
+            1.f     // FAST ATTACK
         };
         for (int i = 0; i < DTX_PARAM_COUNT; ++i) params[i].store(defaults[i]);
         for (int i = 0; i < kScopeSize; ++i) { scopeDry[i].store(0.f); scopeWet[i].store(0.f); }
@@ -92,9 +94,18 @@ struct DTXProcessor {
 
     float p(DTXParam id) const { return params[id].load(std::memory_order_relaxed); }
 
-    dtx::GrainConfig grainConfigFor(int mode) const {
+    dtx::GrainConfig grainConfigFor(int mode, bool fastAttack) const {
         const double s = sr / 48000.0;
         auto n = [s](double v) { return std::max(1, (int)std::lround(v * s)); };
+        dtx::GrainConfig c = baseConfig(mode, n);
+        c.snap = fastAttack;
+        c.snapFade = n(96);
+        c.rateScale = (float)s;
+        return c;
+    }
+
+    template <typename N>
+    static dtx::GrainConfig baseConfig(int mode, N n) {
         switch (mode) {
             // grain, search radius, correlation length, tolerance.
             // Chord artifact level / shifter delay on strummed chords (48 kHz, see Tests):
@@ -109,6 +120,7 @@ struct DTXProcessor {
         sr = sampleRate > 0 ? sampleRate : 48000.0;
         grain.prepare();
         currentGrainMode = -1;
+        currentFastAttack = -1;
         reset();
     }
 
@@ -138,7 +150,12 @@ struct DTXProcessor {
         const float balWetT = std::sin(bal * (float)M_PI * 0.5f);
 
         const int grainMode = engine;   // all engines are configurations of the grain shifter
-        if (grainMode != currentGrainMode) { grain.setConfig(grainConfigFor(grainMode)); currentGrainMode = grainMode; }
+        const int fastAttack = p(DTX_PARAM_FAST_ATTACK) > 0.5f ? 1 : 0;
+        if (grainMode != currentGrainMode || fastAttack != currentFastAttack) {
+            grain.setConfig(grainConfigFor(grainMode, fastAttack != 0));
+            currentGrainMode = grainMode;
+            currentFastAttack = fastAttack;
+        }
 
         // --- per-sample coefficients ---
         const float fs = (float)sr;

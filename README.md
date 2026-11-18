@@ -12,6 +12,10 @@ A native macOS app that does what the BOSS XS-1 Poly Shifter does: you plug a gu
 * **CoreMIDI** expression pedal / footswitch control, keyboard control
 * Six colour themes and its own app icon
 
+## What's new in 1.2
+
+* **Fast attack** (on by default, switch next to the engine selector). When you pick or strum a new note, the shifter jumps straight to the newest audio, with a 2 ms crossfade, instead of waiting for a perfectly aligned splice. On a new strum while the previous chord still rings, the attack now arrives in about **2 ms instead of 13–18 ms** (Tight and Balanced; about 2.6 ms on Wide). Chord quality stays within about 1 dB. Upward shifts improve less, because reading faster than real time needs a head start.
+
 ## What's new in 1.1
 
 * **Much cleaner chords** on every engine. Each splice is now aligned over a 4× longer stretch of the waveform, so it matches all the strings of a chord instead of just the loudest one, with no added delay. On realistic strummed chords, artifacts drop from −22.7 to −26.4 dB (Balanced) and from −26.3 to −30.2 dB (Wide). See [Engines](#engines).
@@ -83,9 +87,10 @@ Everything below is in **Audio Setup**, which also shows a full latency breakdow
 2. **Don't use the Mac's built-in microphone, built-in speakers or Bluetooth.** The built-in mic alone reports around 30 ms of input latency, and Bluetooth adds 100 ms or more. The app warns you if you select a Bluetooth device.
 3. Pick the **highest sample rate** your interface handles comfortably (96 kHz roughly halves converter latency), then the **smallest buffer that doesn't crackle**: 64 samples to start, 32 or 16 if your CPU and driver allow it. The toolbar shows the DSP load and a dropout counter.
 4. Set **Output timing** (IO cycle usage) to **50 %**. By default macOS calls the app at the start of each IO cycle; De-TuneX needs only a few percent of the cycle, so letting macOS call it later removes most of one buffer of output latency at no CPU cost. Go back toward 100 % if you hear crackles.
-5. Pick the engine by what you play: **Tight** for single notes and detune, **Balanced** for general use, **Wide** for chords with the cleanest live sound. **Studio** gives the best chords but ~36 ms of delay, so it's for practising and recording.
-6. Turn off your interface's own direct monitoring of the guitar input. On a Universal Audio Apollo, mute that channel in UA Console; on a Volt, switch monitoring off. Otherwise you hear the dry and shifted signals together.
-7. If the interface has its own driver or control panel, set its safety buffer to the lowest setting.
+5. Leave **Fast attack** on. It makes new notes and strums sound about 2 ms after you pick them, even on chords.
+6. Pick the engine by what you play: **Tight** for single notes and detune, **Balanced** for general use, **Wide** for chords with the cleanest live sound. **Studio** gives the best chords but ~36 ms of delay, so it's for practising and recording.
+7. Turn off your interface's own direct monitoring of the guitar input. On a Universal Audio Apollo, mute that channel in UA Console; on a Volt, switch monitoring off. Otherwise you hear the dry and shifted signals together.
+8. If the interface has its own driver or control panel, set its safety buffer to the lowest setting.
 
 The **total latency** readout adds the converter and driver latency reported by the driver, the input buffer, the trimmed output buffer, and the pitch shifter's own delay. With a good USB or Thunderbolt interface at 48 kHz and 64 samples, expect about 3–6 ms of I/O, plus the shifter's delay: a few ms on single notes, 13–19 ms on chords with Balanced or Wide.
 
@@ -122,7 +127,7 @@ All four engines use the same correlation-aligned granular shifter with differen
 | **Wide** | 2048 | ≈ 0.4–14 ms | ≈ 19 ms | −30 dB | live chords, bass, drop tunings |
 | **Studio** | 8192 | ≈ 1–45 ms | ≈ 36 ms | −34 dB | best chord quality for practice and recording |
 
-\* At 48 kHz, measured by the test suite; the figure depends on the interval and on the notes played. The app shows the live value under **Engine** and in **Audio Setup**.
+\* At 48 kHz, measured by the test suite; the figure depends on the interval and on the notes played. With **Fast attack** on, the *attack* of a new note or strum comes through in about 2 ms on every engine (for downward and small upward shifts); the figures above are the delay of the sustained sound. The app shows the live value under **Engine** and in **Audio Setup**.
 \** Energy that is not on a correctly shifted partial (warble sidebands, smearing, ghost tones), averaged over seven strummed chords and nine intervals. Lower is better; a perfect shifter scores about −42 dB.
 
 **How it works.** The shifter reads overlapping Hann-windowed grains from a delay line at the shifted rate. The usual problem with this design is warble, chorusing and flanging where grains overlap. This one avoids most of it by choosing every grain's start point with a normalized cross-correlation search, so each splice lines up with the waveform it fades into:

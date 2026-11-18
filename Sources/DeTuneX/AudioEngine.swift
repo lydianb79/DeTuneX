@@ -64,6 +64,13 @@ final class AudioEngine: ObservableObject {
     }
     @Published private(set) var engaged = false
     @Published private(set) var pedalDown = false
+    /// Cut to minimum delay on pick attacks (stored separately so older saved settings still load).
+    @Published var fastAttack: Bool = UserDefaults.standard.object(forKey: "fastAttack") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(fastAttack, forKey: "fastAttack")
+            dtx_set_param(processor, DTX_PARAM_FAST_ATTACK, fastAttack ? 1 : 0)
+        }
+    }
     @Published var expression: Float = 1 {
         didSet { dtx_set_param(processor, DTX_PARAM_EXPRESSION, expression) }
     }
@@ -151,6 +158,7 @@ final class AudioEngine: ObservableObject {
         dtx_set_param(processor, DTX_PARAM_EXPRESSION, expression)
         dtx_set_param(processor, DTX_PARAM_INPUT_GAIN_DB, perf.inputGainDb)
         dtx_set_param(processor, DTX_PARAM_OUTPUT_GAIN_DB, perf.outputGainDb)
+        dtx_set_param(processor, DTX_PARAM_FAST_ATTACK, fastAttack ? 1 : 0)
         // Leaving momentary mode while held must not leave the effect stuck on.
         if perf.pedalMode == .momentary && !pedalDown && engaged { setEngaged(false) }
     }

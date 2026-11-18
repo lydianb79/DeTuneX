@@ -187,8 +187,12 @@ struct PerformancePanel: View {
                     ForEach(Engine.allCases) { Text($0.name).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 360)
+                .frame(maxWidth: 300)
                 Spacer()
+                Toggle("Fast attack", isOn: $engine.fastAttack)
+                    .toggleStyle(.switch).controlSize(.small)
+                    .help("On a new pick attack, jump straight to the newest audio (about 2 ms) instead of waiting for a perfectly aligned splice. Makes playing feel snappier.")
+                Spacer().frame(width: 12)
                 LatencySummary()
             }
             Text(engine.perf.engine.help).font(.caption2).foregroundStyle(.secondary)

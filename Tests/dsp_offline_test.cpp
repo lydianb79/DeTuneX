@@ -321,6 +321,41 @@ static void testStrummedChords(int engine, double maxMeanDb) {
     check(total / count <= maxMeanDb, msg);
 }
 
+// Attack delay of a new strum played while the previous chord still rings:
+// time for the output envelope to reach half of its new peak, minus the same for the input.
+static double attackDelayMs(int engine, bool fastAttack, float semis) {
+    const std::vector<double> shape = {82.41, 123.47, 164.81, 207.65, 246.94, 329.63};
+    std::vector<StrNote> notes;
+    for (double t0 : {0.1, 1.7})
+        for (size_t i = 0; i < shape.size(); ++i) notes.push_back({shape[i], t0 + 0.018 * i, 1.0 - 0.05 * i});
+    auto in = strum(notes, 2.4, 1.0);
+    DTXProcessor* p = makeProc(engine, semis);
+    dtx_set_param(p, DTX_PARAM_FAST_ATTACK, fastAttack ? 1.f : 0.f);
+    auto out = render(p, in);
+    dtx_processor_destroy(p);
+    auto env = [](const std::vector<float>& v, size_t i) { double e = 0; for (int k = 0; k < 24; ++k) e += v[i + k] * v[i + k]; return std::sqrt(e / 24); };
+    auto halfway = [&](const std::vector<float>& v) {
+        const double t0 = 1.7;
+        double pre = 0, pk = 0;
+        for (size_t i = (size_t)((t0 - 0.03) * SR); i < (size_t)((t0 - 0.01) * SR); i += 24) pre = std::max(pre, env(v, i));
+        for (size_t i = (size_t)(t0 * SR); i < (size_t)((t0 + 0.08) * SR); i += 12) pk = std::max(pk, env(v, i));
+        const double th = pre + 0.5 * (pk - pre);
+        for (size_t i = (size_t)((t0 - 0.005) * SR); i < (size_t)((t0 + 0.08) * SR); ++i) if (env(v, i) > th) return i * 1000.0 / SR;
+        return 1e9;
+    };
+    return halfway(out) - halfway(in);
+}
+
+static void testAttack(int engine, double maxMs) {
+    double on = 0, off = 0; int n = 0;
+    for (float semis : {-5.f, -2.f, -1.f, 2.f}) { on += attackDelayMs(engine, true, semis); off += attackDelayMs(engine, false, semis); ++n; }
+    on /= n; off /= n;
+    char msg[200];
+    std::snprintf(msg, sizeof msg, "%-8s strum attack delay: %5.1f ms with Fast attack (%5.1f ms without), limit %.0f ms",
+                  engineName(engine), on, off, maxMs);
+    check(on <= maxMs && on < off, msg);
+}
+
 int main() {
     std::puts("Pitch accuracy (single notes)");
     const float shifts[] = {-36, -24, -12, -7, -5, -1, -0.2f, 0.2f, 1, 2, 5, 7, 12, 24};
@@ -341,6 +376,8 @@ int main() {
     }
     std::puts("Strummed chords (realistic guitar model)");
     testStrummedChords(0, -16); testStrummedChords(1, -24); testStrummedChords(2, -28); testStrummedChords(3, -32);
+    std::puts("Attack delay on a new strum (Fast attack)");
+    testAttack(0, 3); testAttack(1, 3); testAttack(2, 6);
     std::puts("Level stability");
     for (int e = 0; e < 4; ++e) for (float s : {-24.f, -12.f, -5.f, 0.2f, 7.f, 12.f}) testLevel(e, s);
     std::puts("Latency");
