@@ -53,10 +53,10 @@ enum Engine: Int, Codable, CaseIterable, Identifiable {
     }
     var help: String {
         switch self {
-        case .tight: return "Lowest latency (~1–6 ms). Best for detune and small intervals above the low strings."
-        case .balanced: return "Default. Clean chords across the neck, ~3–8 ms."
-        case .wide: return "Longest windows for bass, drop tunings and octave-down chords, ~4–14 ms."
-        case .studio: return "Phase-locked vocoder. Most transparent mid/high chords, but ~43 ms latency — practice and recording, not live feel."
+        case .tight: return "Lowest delay: single notes and detune (~1–5 ms). Chords warble — use Balanced or Wide for chords."
+        case .balanced: return "Default. Good chords for most shifts; shifter delay ~4–8 ms on single notes, ~13 ms on chords."
+        case .wide: return "Cleanest live chords, bass and drop tunings; ~19 ms shifter delay on chords."
+        case .studio: return "Best chord quality for practice and recording; ~36 ms on chords, up to ~45 ms for octaves. Not for tight live feel."
         }
     }
 }

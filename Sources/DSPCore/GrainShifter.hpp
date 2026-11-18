@@ -8,7 +8,9 @@
 //     before it best matches the waveform just before the grain it crossfades
 //     with (normalized cross-correlation over corrLen samples, looking
 //     *backwards*, so the search costs no extra latency). This removes most
-//     of the phasing/flanging of the plain two-head design, for chords too.
+//     of the phasing/flanging of the plain two-head design. A long correlation
+//     window (~1024 samples) matters a lot for chords: it makes the splice
+//     match all strings at once instead of just the loudest partial.
 //
 //  2. Ratio-adaptive grains. Shifting down, a grain reads slower than real
 //     time so the delay grows; we start each grain at the minimum safe delay.
@@ -36,6 +38,9 @@ public:
     void prepare() {
         buf_.assign(kBufSize, 0.f);
         corr_.assign(8192, 0.f);
+        ref_.assign(8192, 0.f);       // correlation window (corrLen) scratch
+        chunk_.assign(16384, 0.f);    // candidate region (2 x searchRadius + corrLen) scratch
+        prefix_.assign(16385, 0.0);
         win_.resize(kWinTable + 2);
         for (int i = 0; i <= kWinTable + 1; ++i) {
             const double s = std::sin(M_PI * std::min(i, kWinTable) / kWinTable);
@@ -161,25 +166,43 @@ private:
     // `latencyBias` of the best one, the shortest delay wins, so latency stays
     // as low as the signal allows without ever accepting a misaligned splice.
     double searchSplice(double refPos, double dMin, int range) {
-        const int C = cfg_.corrLen;
-        range = std::min(range, (int)corr_.size() - 1);
+        const int C = std::min(cfg_.corrLen, (int)ref_.size());
+        range = std::min({range, (int)corr_.size() - 1, (int)chunk_.size() - C});
         const int64_t refEnd = (int64_t)std::floor(refPos);
+        const int64_t candBase = t_ - (int64_t)std::ceil(dMin);
+
+        // Copy the reference window and the whole candidate region into contiguous
+        // scratch memory once, so the inner products below are plain, vectorisable loops.
+        float* ref = ref_.data();
+        float* chunk = chunk_.data();
+        for (int m = 0; m < C; ++m) ref[m] = at(refEnd - C + m);
+        const int64_t chunkStart = candBase - range - C;      // oldest sample any candidate uses
+        const int chunkLen = range + C;
+        for (int i = 0; i < chunkLen; ++i) chunk[i] = at(chunkStart + i);
+
         float eRef = 0.f;
-        for (int m = 1; m <= C; m += 2) { const float v = at(refEnd - m); eRef += v * v; }
+        for (int m = 0; m < C; ++m) eRef += ref[m] * ref[m];
         if (eRef < 1e-7f) return 0; // silence: shortest delay
 
-        const int64_t candBase = t_ - (int64_t)std::ceil(dMin);
+        // Window energies from a prefix sum (double: no cancellation drift).
+        double* pre = prefix_.data();
+        pre[0] = 0.0;
+        for (int i = 0; i < chunkLen; ++i) pre[i + 1] = pre[i] + (double)chunk[i] * chunk[i];
+
         float best = -2.f;
         int bestJ = 0;
         for (int j = 0; j <= range; ++j) {
-            const int64_t ce = candBase - j;
-            float dot = 0.f, e = 0.f;
-            for (int m = 1; m <= C; m += 2) {
-                const float c = at(ce - m);
-                dot += c * at(refEnd - m);
-                e += c * c;
+            // candidate j ends at candBase - j  →  chunk offset (range - j)
+            const float* c = chunk + (range - j);
+            float d0 = 0.f, d1 = 0.f, d2 = 0.f, d3 = 0.f;
+            int m = 0;
+            for (; m + 3 < C; m += 4) {
+                d0 += c[m] * ref[m];         d1 += c[m + 1] * ref[m + 1];
+                d2 += c[m + 2] * ref[m + 2]; d3 += c[m + 3] * ref[m + 3];
             }
-            const float v = dot / std::sqrt(e * eRef + 1e-12f);
+            for (; m < C; ++m) d0 += c[m] * ref[m];
+            const double e = pre[range - j + C] - pre[range - j];
+            const float v = (float)((d0 + d1 + d2 + d3) / std::sqrt(e * eRef + 1e-12));
             corr_[j] = v;
             if (v > best) { best = v; bestJ = j; }
         }
@@ -200,7 +223,8 @@ private:
         return j + std::clamp(0.5f * (a - c) / den, -0.5f, 0.5f);
     }
 
-    std::vector<float> buf_, win_, corr_;
+    std::vector<float> buf_, win_, corr_, ref_, chunk_;
+    std::vector<double> prefix_;
     Grain grains_[kMaxGrains];
     int newest_ = -1;
     int64_t t_ = 0;

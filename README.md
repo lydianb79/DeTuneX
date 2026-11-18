@@ -72,11 +72,11 @@ Everything below is in **Audio Setup**, which also shows a full latency breakdow
 2. **Don't use the Mac's built-in microphone, built-in speakers or Bluetooth.** The built-in mic alone reports around 30 ms of input latency, and Bluetooth adds 100 ms or more. The app warns you if you select a Bluetooth device.
 3. Pick the **highest sample rate** your interface handles comfortably (96 kHz roughly halves converter latency), then the **smallest buffer that doesn't crackle**: 64 samples to start, 32 or 16 if your CPU and driver allow it. The toolbar shows the DSP load and a dropout counter.
 4. Set **Output timing** (IO cycle usage) to **50 %**. By default macOS calls the app at the start of each IO cycle; De-TuneX needs only a few percent of the cycle, so letting macOS call it later removes most of one buffer of output latency at no CPU cost. Go back toward 100 % if you hear crackles.
-5. Use the **Tight** or **Balanced** engine for playing. **Studio** is for practising and recording only.
+5. Pick the engine by what you play: **Tight** for single notes and detune, **Balanced** for general use, **Wide** for chords with the cleanest live sound. **Studio** gives the best chords but ~36 ms of delay, so it's for practising and recording.
 6. Turn off your interface's own direct monitoring of the guitar input. On a Universal Audio Apollo, mute that channel in UA Console; on a Volt, switch monitoring off. Otherwise you hear the dry and shifted signals together.
 7. If the interface has its own driver or control panel, set its safety buffer to the lowest setting.
 
-The **total latency** readout adds the converter and driver latency reported by the driver, the input buffer, the trimmed output buffer, and the pitch shifter's own delay. With a good USB or Thunderbolt interface at 48 kHz and 64 samples, expect about 3–6 ms of I/O plus 1–8 ms of shifting.
+The **total latency** readout adds the converter and driver latency reported by the driver, the input buffer, the trimmed output buffer, and the pitch shifter's own delay. With a good USB or Thunderbolt interface at 48 kHz and 64 samples, expect about 3–6 ms of I/O, plus the shifter's delay: a few ms on single notes, 13–19 ms on chords with Balanced or Wide.
 
 ## Themes & icon
 
@@ -102,35 +102,43 @@ Bypass is fully transparent: when the effect is off, the output is bit-identical
 
 ## Engines
 
-| Engine | Algorithm | Shifter latency* | Use for |
-|---|---|---|---|
-| **Tight** | granular, 512-sample grains | ≈ 0.2–5 ms | detune, small intervals, mid/high register |
-| **Balanced** (default) | granular, 1024-sample grains | ≈ 0.3–8 ms | general guitar use, chords anywhere on the neck |
-| **Wide** | granular, 2048-sample grains | ≈ 0.4–14 ms | bass, drop tunings, octave-down chords |
-| **Studio** | phase-locked phase vocoder (2048 FFT) | ≈ 43 ms | most transparent mid/high chords, not for live feel |
+All four engines use the same correlation-aligned granular shifter with different settings. Chords need a longer splice search than single notes, so the shifter's own delay is higher on chords than on single notes.
 
-\* At 48 kHz, measured by the test suite. The figure depends on the interval and on the signal's period.
+| Engine | Grain | Shifter delay, single notes* | Shifter delay, chords* | Chord artifacts** | Use for |
+|---|---|---|---|---|---|
+| **Tight** | 512 | ≈ 0.2–5 ms | ≈ 10 ms | −18 dB | single notes, detune |
+| **Balanced** (default) | 1024 | ≈ 0.3–8 ms | ≈ 13 ms | −26 dB | general guitar use |
+| **Wide** | 2048 | ≈ 0.4–14 ms | ≈ 19 ms | −30 dB | live chords, bass, drop tunings |
+| **Studio** | 8192 | ≈ 1–45 ms | ≈ 36 ms | −34 dB | best chord quality for practice and recording |
 
-**How the granular engines work.** They read overlapping Hann-windowed grains from a delay line at the shifted rate. The usual problem with this design is chorusing and flanging where grains overlap. This one avoids it by choosing every grain's start point with a normalized cross-correlation search, so each splice lines up with the waveform it fades into. The search looks backwards in time, so it adds no latency. Among the matching candidates it takes the shortest delay that is still well aligned, interpolated to a fraction of a sample, which keeps detune in tune to within 0.2 cents. For large up-shifts the grains get shorter so the delay doesn't grow.
+\* At 48 kHz, measured by the test suite; the figure depends on the interval and on the notes played. The app shows the live value under **Engine** and in **Audio Setup**.
+\** Energy that is not on a correctly shifted partial (warble sidebands, smearing, ghost tones), averaged over seven strummed chords and nine intervals. Lower is better; a perfect shifter scores about −42 dB.
 
-**How Studio works.** It follows Laroche & Dolson's peak-locked phase vocoder. It moves each spectral peak's region to the shifted bin with a single phase rotation per region. When shifting down, it compresses the regions so neighbouring chord tones don't cancel each other.
+**How it works.** The shifter reads overlapping Hann-windowed grains from a delay line at the shifted rate. The usual problem with this design is warble, chorusing and flanging where grains overlap. This one avoids most of it by choosing every grain's start point with a normalized cross-correlation search, so each splice lines up with the waveform it fades into:
+
+* The comparison window is long (512–1024 samples), so a splice has to match all the strings of a chord at once, not just the loudest one.
+* The search looks backwards in time, so the comparison itself adds no latency. The search range (up to ±900 samples) has to cover about one period of the lowest note, which is what sets the delay on chords.
+* Among well-aligned candidates it takes the shortest delay, interpolated to a fraction of a sample, so detune stays in tune to within 0.2 cents.
+* For large up-shifts the grains get shorter, so the delay doesn't keep growing.
+
+Versions before 1.1 had a phase-vocoder Studio engine. It measured far worse on real chords (−15 dB) at a higher delay (43 ms), so it was replaced.
 
 ## Verification
 
 `bash scripts/run_tests.sh` builds and runs `Tests/dsp_offline_test.cpp`. It runs on macOS or Linux and checks:
 
 * pitch accuracy from −36 to +24 semitones on every engine (≤ 1 cent typical, apart from extreme up-shifts in Tight)
-* polyphony: an equal-tempered E major chord and a low-string E5 with harmonics, scored as the share of output energy on the target partials (≥ 87 % for E major on every engine, 100 % for low E5 on Balanced/Wide)
+* polyphony: steady E major and low-string E5 chords (share of output energy on the target partials), plus **strummed chords** from a realistic string model with slightly out-of-tune strings, scored as artifact energy in dB with a pass limit per engine (Tight −16, Balanced −24, Wide −28, Studio −32 dB)
 * level stability (< 0.05 dB ripple, unity gain)
 * latency, rise/fall glides, expression scaling, bit-exact bypass, and CPU load (≈ 2 % of one core per engine)
 
-Known limitations, which the test reports as INFO: **Tight** and **Studio** are weaker on low-string chords. Tight's grains are shorter than the chord's period, and Studio is limited by its FFT resolution. Use **Balanced** or **Wide** for those.
+Known limitation, reported by the test as INFO: **Tight** is weak on low-string chords, because its grains are shorter than the chord's period. Use **Balanced**, **Wide** or **Studio** for chords.
 
 ## Project layout
 
 ```
 Package.swift
-Sources/DSPCore/        C++17 DSP, C API (DSPCore.h): GrainShifter, SpectralShifter, Processor
+Sources/DSPCore/        C++17 DSP, C API (DSPCore.h): GrainShifter, Processor
 Sources/AudioHost/      CoreAudio AUHAL duplex host + private aggregate device
 Sources/DeTuneX/        SwiftUI app, Metal scope, CoreMIDI, device enumeration, settings
 Tests/                  offline DSP test suite

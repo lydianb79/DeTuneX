@@ -22,7 +22,7 @@ typedef enum {
     DTX_PARAM_FALL_MS,              // 0..2000 glide time back to 0 when disengaging
     DTX_PARAM_EXPRESSION,           // 0..1  expression pedal position (heel..toe)
     DTX_PARAM_EXPRESSION_ACTIVE,    // 0/1   when 1 the shift is scaled linearly by EXPRESSION
-    DTX_PARAM_ENGINE,               // 0 Tight, 1 Balanced, 2 Wide/Bass, 3 Studio (spectral)
+    DTX_PARAM_ENGINE,               // 0 Tight, 1 Balanced, 2 Wide, 3 Studio (grain configurations)
     DTX_PARAM_INPUT_GAIN_DB,        // -24..+24
     DTX_PARAM_OUTPUT_GAIN_DB,       // -24..+24
     DTX_PARAM_COUNT

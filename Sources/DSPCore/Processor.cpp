@@ -8,7 +8,6 @@
 // Everything here is allocation-free and lock-free on the audio thread.
 #include "DSPCore.h"
 #include "GrainShifter.hpp"
-#include "SpectralShifter.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -65,14 +64,12 @@ struct DTXProcessor {
     // ---- audio thread state ---------------------------------------------
     double sr = 48000.0;
     dtx::GrainShifter grain;
-    dtx::SpectralShifter spectral;
     int currentGrainMode = -1;
 
     float glide = 0.f;          // 0..1 glide position
     float semisSmooth = 0.f;    // smoothed effective shift
     float exprSmooth = 1.f;
     float bypassGain = 0.f;     // 0 = direct/bypass, 1 = effect path
-    float spectralMix = 0.f;    // 0 = grain engine, 1 = spectral engine
     float inGain = 1.f, outGain = 1.f, balDry = 0.f, balWet = 1.f;
 
     DTXProcessor() {
@@ -91,7 +88,6 @@ struct DTXProcessor {
         for (int i = 0; i < DTX_PARAM_COUNT; ++i) params[i].store(defaults[i]);
         for (int i = 0; i < kScopeSize; ++i) { scopeDry[i].store(0.f); scopeWet[i].store(0.f); }
         grain.prepare();
-        spectral.prepare(sr);
     }
 
     float p(DTXParam id) const { return params[id].load(std::memory_order_relaxed); }
@@ -100,27 +96,26 @@ struct DTXProcessor {
         const double s = sr / 48000.0;
         auto n = [s](double v) { return std::max(1, (int)std::lround(v * s)); };
         switch (mode) {
-            // grain, search radius, correlation length, latency bias
-            case 0:  return { n(512),  n(500), n(256), 0.02f };  // Tight:    lowest latency (~4–7 ms)
-            case 2:  return { n(2048), n(900), n(256), 0.02f };  // Wide:     bass, low tunings, big intervals
-            default: return { n(1024), n(600), n(256), 0.02f };  // Balanced: default for guitar
+            // grain, search radius, correlation length, tolerance.
+            // Chord artifact level / shifter delay on strummed chords (48 kHz, see Tests):
+            case 0:  return { n(512),  n(500), n(512),  0.02f };  // Tight:    single notes, detune  (-18 dB, ~10 ms)
+            case 2:  return { n(2048), n(900), n(1024), 0.02f };  // Wide:     chords, bass, drop    (-30 dB, ~19 ms)
+            case 3:  return { n(8192), n(900), n(1024), 0.02f };  // Studio:   best chords           (-34 dB, ~36 ms)
+            default: return { n(1024), n(600), n(1024), 0.02f };  // Balanced: default               (-26 dB, ~13 ms)
         }
     }
 
     void prepare(double sampleRate) {
         sr = sampleRate > 0 ? sampleRate : 48000.0;
         grain.prepare();
-        spectral.prepare(sr);
         currentGrainMode = -1;
         reset();
     }
 
     void reset() {
         grain.reset();
-        spectral.reset();
         glide = 0.f; semisSmooth = 0.f; exprSmooth = 1.f;
         bypassGain = p(DTX_PARAM_ENGAGED) > 0.5f ? 1.f : 0.f;
-        spectralMix = p(DTX_PARAM_ENGINE) > 2.5f ? 1.f : 0.f;
     }
 
     void process(const float* in, float* out, int frames) {
@@ -142,7 +137,7 @@ struct DTXProcessor {
         const float balDryT = std::cos(bal * (float)M_PI * 0.5f);
         const float balWetT = std::sin(bal * (float)M_PI * 0.5f);
 
-        const int grainMode = engine < 3 ? engine : (currentGrainMode < 0 ? 1 : currentGrainMode);
+        const int grainMode = engine;   // all engines are configurations of the grain shifter
         if (grainMode != currentGrainMode) { grain.setConfig(grainConfigFor(grainMode)); currentGrainMode = grainMode; }
 
         // --- per-sample coefficients ---
@@ -150,11 +145,9 @@ struct DTXProcessor {
         const float riseStep = riseMs > 0.5f ? 1.f / (riseMs * 0.001f * fs) : 1.f;
         const float fallStep = fallMs > 0.5f ? 1.f / (fallMs * 0.001f * fs) : 1.f;
         const float bypassStep = 1.f / (0.006f * fs);           // 6 ms click-free switching
-        const float engineStep = 1.f / (0.030f * fs);           // 30 ms engine crossfade
         const float semisCoef = 1.f - std::exp(-1.f / (0.012f * fs)); // knob/MIDI smoothing
         const float exprCoef = 1.f - std::exp(-1.f / (0.008f * fs));
         const float paramCoef = 1.f - std::exp(-1.f / (0.010f * fs));
-        const float spectralTarget = engine == 3 ? 1.f : 0.f;
 
         float pkIn = 0.f, pkOut = 0.f;
         int sw = scopeWrite.load(std::memory_order_relaxed);
@@ -181,13 +174,8 @@ struct DTXProcessor {
             if (wetActive) bypassGain = std::min(1.f, bypassGain + bypassStep);
             else           bypassGain = std::max(0.f, bypassGain - bypassStep);
 
-            if (spectralMix < spectralTarget)      spectralMix = std::min(spectralTarget, spectralMix + engineStep);
-            else if (spectralMix > spectralTarget) spectralMix = std::max(spectralTarget, spectralMix - engineStep);
-
-            // Both engines always run so switching is seamless (cost is small).
-            const float g = grain.process(x, ratio);
-            const float s = spectral.process(x, ratio);
-            const float shifted = g + (s - g) * spectralMix;
+            // Engine changes take effect at the next grain boundary (click-free).
+            const float shifted = grain.process(x, ratio);
 
             const float effect = balDry * x + balWet * shifted;
             float y = x + (effect - x) * bypassGain;
@@ -204,8 +192,7 @@ struct DTXProcessor {
         scopeWrite.store(sw, std::memory_order_release);
         curSemis.store(semisSmooth, std::memory_order_relaxed);
         wetAmount.store(bypassGain, std::memory_order_relaxed);
-        const float lat = grain.latency() + ((float)spectral.latency() - grain.latency()) * spectralMix;
-        latency.store(lat, std::memory_order_relaxed);
+        latency.store(grain.latency(), std::memory_order_relaxed);
         atomicMax(peakIn, pkIn);
         atomicMax(peakOut, pkOut);
     }

@@ -228,6 +228,99 @@ static void testCpu() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Realistic strummed chords: additive string model with inharmonic partials,
+// per-partial decay, a few cents of mistuning per string and an 18 ms strum.
+// Score = energy that is NOT on any correctly shifted partial (warble sidebands,
+// smearing, ghost tones), relative to total, in dB. A perfect shifter scores
+// about -42 dB on this set; lower is better.
+// ---------------------------------------------------------------------------
+struct StrNote { double f, t0, amp; };
+
+static std::vector<float> strum(const std::vector<StrNote>& notes, double seconds, double ratio) {
+    std::vector<float> y((size_t)(seconds * SR), 0.f);
+    for (size_t n = 0; n < notes.size(); ++n) {
+        const auto& nt = notes[n];
+        const size_t s0 = (size_t)(nt.t0 * SR);
+        for (int h = 1; h <= 18; ++h) {
+            const double fh = nt.f * h * std::sqrt(1 + 0.00012 * h * h) * ratio;
+            if (fh > 0.45 * SR) break;
+            const double a = nt.amp / std::pow(h, 0.9) * std::fabs(0.6 + 0.4 * std::sin(h * 1.3));
+            const double tau = 2.5 / (1.0 + 0.15 * h * h * (nt.f / 110.0));
+            const double w = 2 * M_PI * fh / SR, ph = 0.7 * h + 1.9 * n;
+            for (size_t i = s0; i < y.size(); ++i) {
+                const double t = (i - s0) / SR, env = std::exp(-t / tau) * std::min(1.0, t / 0.002);
+                if (env < 1e-4 && t > 0.01) break;
+                y[i] += (float)(a * env * std::sin(w * (i - s0) + ph));
+            }
+        }
+    }
+    float pk = 0; for (float v : y) pk = std::max(pk, std::fabs(v));
+    for (float& v : y) v *= 0.5f / pk;
+    return y;
+}
+
+static double artifactDb(const std::vector<float>& x, std::vector<double> targets) {
+    std::sort(targets.begin(), targets.end());
+    const int N = 16384, H = 4096;
+    dtx::FFT fft; fft.init(N);
+    std::vector<float> re(N), im(N);
+    double tot = 0, off = 0;
+    for (size_t s = (size_t)(0.15 * SR); s + N <= x.size(); s += H) {
+        for (int i = 0; i < N; ++i) { re[i] = (float)(x[s + i] * (0.5 - 0.5 * std::cos(2 * M_PI * i / N))); im[i] = 0; }
+        fft.transform(re.data(), im.data(), false);
+        for (int k = 4; k < N / 2; ++k) {
+            const double f = k * SR / N;
+            if (f > 12000) break;
+            const double p = (double)re[k] * re[k] + (double)im[k] * im[k];
+            tot += p;
+            auto it = std::lower_bound(targets.begin(), targets.end(), f);
+            double d = 1e9;
+            if (it != targets.end()) d = std::min(d, std::fabs(*it - f));
+            if (it != targets.begin()) d = std::min(d, std::fabs(*(it - 1) - f));
+            if (d > std::max(3.0 * SR / N, f * 0.0087)) off += p;
+        }
+    }
+    return 10 * std::log10(off / tot + 1e-12);
+}
+
+static void testStrummedChords(int engine, double maxMeanDb) {
+    const std::vector<std::vector<double>> shapes = {
+        {82.41, 123.47, 164.81, 207.65, 246.94, 329.63},   // E
+        {98.00, 123.47, 146.83, 196.00, 246.94, 392.00},   // G
+        {130.81, 164.81, 196.00, 261.63, 329.63},          // C
+        {110.00, 164.81, 220.00, 261.63, 329.63},          // Am
+        {146.83, 220.00, 293.66, 369.99},                  // D
+        {82.41, 123.47, 164.81},                           // E5
+        {392.00, 493.88, 587.33}};                         // high triad
+    const float shifts[] = {-12, -5, -2, -1, 0.15f, 2, 5, 7, 12};
+    double total = 0; int count = 0; double worst = -1e9; float worstShift = 0;
+    for (float semis : shifts) {
+        double sum = 0;
+        for (size_t c = 0; c < shapes.size(); ++c) {
+            std::vector<StrNote> notes;
+            for (size_t i = 0; i < shapes[c].size(); ++i) {
+                const double detune = std::pow(2.0, (3.0 * std::sin(7.1 * i + c)) / 1200.0); // ±3 cents
+                notes.push_back({shapes[c][i] * detune, 0.1 + 0.018 * i, 1.0 - 0.05 * i});
+            }
+            const double r = std::pow(2.0, semis / 12.0);
+            std::vector<double> targets;
+            for (auto& n : notes) for (int h = 1; h <= 18; ++h) targets.push_back(n.f * h * std::sqrt(1 + 0.00012 * h * h) * r);
+            DTXProcessor* p = makeProc(engine, semis);
+            auto out = render(p, strum(notes, 2.2, 1.0));
+            dtx_processor_destroy(p);
+            sum += artifactDb(out, targets);
+        }
+        const double mean = sum / shapes.size();
+        total += mean; ++count;
+        if (mean > worst) { worst = mean; worstShift = semis; }
+    }
+    char msg[200];
+    std::snprintf(msg, sizeof msg, "%-8s strummed chords: artifacts %6.1f dB mean (worst %6.1f dB at %+g st), limit %.0f dB",
+                  engineName(engine), total / count, worst, worstShift, maxMeanDb);
+    check(total / count <= maxMeanDb, msg);
+}
+
 int main() {
     std::puts("Pitch accuracy (single notes)");
     const float shifts[] = {-36, -24, -12, -7, -5, -1, -0.2f, 0.2f, 1, 2, 5, 7, 12, 24};
@@ -241,11 +334,13 @@ int main() {
     const std::vector<double> eMaj = {164.81, 246.94, 329.63, 415.30};
     const std::vector<double> lowE = {82.41, 123.47, 164.81};          // E5 power chord, low strings
     for (int e = 0; e < 4; ++e) {
-        for (float s : {-12.f, -5.f, -2.f, 0.15f, 4.f, 7.f, 12.f}) testChord(e, "E major", eMaj, s, e == 3 ? 0.85 : 0.75);
-        // Tight (short grains) and Studio (FFT resolution) are not meant for chords on the
-        // lowest strings; Balanced and Wide are. Reported, not asserted, for those two.
-        for (float s : {-12.f, -2.f, 7.f}) testChord(e, "low E5", lowE, s, 0.9, e == 0 || e == 3);
+        for (float s : {-12.f, -5.f, -2.f, 0.15f, 4.f, 7.f, 12.f}) testChord(e, "E major", eMaj, s, 0.75);
+        // Tight (short grains) is meant for single notes and detune, not for chords on the
+        // lowest strings. Reported, not asserted, for Tight.
+        for (float s : {-12.f, -2.f, 7.f}) testChord(e, "low E5", lowE, s, 0.9, e == 0);
     }
+    std::puts("Strummed chords (realistic guitar model)");
+    testStrummedChords(0, -16); testStrummedChords(1, -24); testStrummedChords(2, -28); testStrummedChords(3, -32);
     std::puts("Level stability");
     for (int e = 0; e < 4; ++e) for (float s : {-24.f, -12.f, -5.f, 0.2f, 7.f, 12.f}) testLevel(e, s);
     std::puts("Latency");
